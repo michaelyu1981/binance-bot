@@ -16,7 +16,7 @@ from urllib.request import urlopen
 
 
 PUBLIC_SPOT_API_BASE_URL = "https://api.binance.com"
-DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT")
+DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "BNBUSDT", "ZECUSDT", "XTZUSDT")
 
 
 @dataclass(frozen=True)
