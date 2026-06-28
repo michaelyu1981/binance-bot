@@ -31,3 +31,20 @@ No withdrawals.
 3. Telegram alerts
 4. Freqtrade dry-run
 5. Tiny live Spot trading only after explicit approval
+
+## Phase 1 public market monitor
+
+The first monitor reads public Binance spot prices only:
+
+- BTC/USDT
+- ETH/USDT
+- BNB/USDT
+
+It uses Binance's unauthenticated public ticker endpoint. It does not use an API
+key, does not access account data, and does not contain buy/sell order code.
+
+Run it with:
+
+```bash
+python3 -m app.main
+```
