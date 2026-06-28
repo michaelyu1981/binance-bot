@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from app.binance_reader import BinancePublicMarketError, MarketPrice, fetch_public_prices
 from app.config import PUBLIC_MARKET_WATCHLIST
 from app.logger import append_market_price_log, current_timestamp, format_market_price_lines
+from app.telegram_notifier import TelegramSendError, send_alert_lines_to_telegram
 
 
 DEFAULT_WATCH_INTERVAL_SECONDS = 60
@@ -95,6 +96,10 @@ def run_watch(interval_seconds: int, alert_threshold_percent: Decimal) -> int:
                 append_market_price_log(alert_lines)
                 for line in alert_lines:
                     print(line)
+                try:
+                    send_alert_lines_to_telegram(alert_lines)
+                except TelegramSendError as exc:
+                    print(f"Telegram alert send failed: {exc}")
 
             previous_prices = {price.symbol: price.price for price in prices}
             time.sleep(interval_seconds)

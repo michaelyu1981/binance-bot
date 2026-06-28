@@ -91,9 +91,38 @@ logs/market_prices.log
 
 The log contains only timestamps, symbols, and public market prices. It must not
 contain secrets, API keys, account data, order data, Telegram tokens, or trading
-credentials. Telegram alerts are not included yet.
+credentials.
 
 In watch mode, the monitor compares each symbol's current public price to its
 previous cycle price. If the change is at least the configured threshold, it
 prints an `ALERT` line and appends the same line to `logs/market_prices.log`.
 The default alert threshold is `1.0%`.
+
+## Optional Telegram alerts
+
+Telegram alerts are optional. They send only `ALERT` lines from watch mode when
+the configured price-change threshold is reached. Telegram does not receive
+normal price lines.
+
+The monitor still uses Binance public market data only:
+
+- No Binance API key
+- No Binance account access
+- No buy/sell
+- No order endpoints
+
+Configure Telegram with environment variables:
+
+```bash
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+Leave either value empty to disable Telegram. The app will still print and log
+alerts locally.
+
+Do not commit `.env`. Do not paste Telegram tokens into README, docs, code,
+tests, logs, screenshots, or Codex prompts.
+
+If Telegram delivery fails, the app prints a clear send failure message without
+printing the Telegram token.
