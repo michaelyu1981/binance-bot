@@ -1,0 +1,26 @@
+# Secrets
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs and runtime files
+logs/*
+!logs/.gitkeep
+data/*
+!data/.gitkeep
+
+# Freqtrade runtime files
+freqtrade/user_data/*.sqlite
+freqtrade/user_data/*.sqlite-shm
+freqtrade/user_data/*.sqlite-wal
+freqtrade/user_data/logs/
+freqtrade/user_data/backtest_results/
+
+# OS / editor
+.DS_Store
+.vscode/
