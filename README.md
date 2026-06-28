@@ -126,3 +126,43 @@ tests, logs, screenshots, or Codex prompts.
 
 If Telegram delivery fails, the app prints a clear send failure message without
 printing the Telegram token.
+
+## Docker local setup
+
+The Docker setup runs the same read-only public market monitor. It does not add
+Binance account access, buy/sell logic, order endpoints, Freqtrade, or
+DigitalOcean deployment.
+
+Build the local image:
+
+```bash
+docker compose build
+```
+
+Run once:
+
+```bash
+docker compose run --rm binance-bot python3 -m app.main
+```
+
+Run in watch mode:
+
+```bash
+docker compose run --rm binance-bot python3 -m app.main --watch --interval 60 --alert-threshold 0.5
+```
+
+Docker Compose reads `.env` for variable substitution if present, and passes
+only the Telegram variables into the container. Telegram settings must come from
+environment variables only:
+
+```bash
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+The `.env` file is ignored by Git and is excluded from the Docker image build
+context. Logs are mounted from `./logs` to `/app/logs` so
+`logs/market_prices.log` persists outside the container.
+
+Avoid running `docker compose config` with real secrets loaded, because Docker
+Compose may print expanded environment values to the terminal.
