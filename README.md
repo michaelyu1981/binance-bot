@@ -58,6 +58,24 @@ Run it with:
 python3 -m app.main
 ```
 
+Show command help without fetching Binance data:
+
+```bash
+python3 -m app.main --help
+```
+
+Run continuously until Ctrl+C:
+
+```bash
+python3 -m app.main --watch
+```
+
+Run continuously with a 5-second interval:
+
+```bash
+python3 -m app.main --watch --interval 5
+```
+
 Every run prints timestamped public prices in Philippine time, UTC+8, and
 appends the same lines to:
 
