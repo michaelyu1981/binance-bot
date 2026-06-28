@@ -76,6 +76,12 @@ Run continuously with a 5-second interval:
 python3 -m app.main --watch --interval 5
 ```
 
+Run continuously with a 5-second interval and 1% local price-change alerts:
+
+```bash
+python3 -m app.main --watch --interval 5 --alert-threshold 1
+```
+
 Every run prints timestamped public prices in Philippine time, UTC+8, and
 appends the same lines to:
 
@@ -86,3 +92,8 @@ logs/market_prices.log
 The log contains only timestamps, symbols, and public market prices. It must not
 contain secrets, API keys, account data, order data, Telegram tokens, or trading
 credentials. Telegram alerts are not included yet.
+
+In watch mode, the monitor compares each symbol's current public price to its
+previous cycle price. If the change is at least the configured threshold, it
+prints an `ALERT` line and appends the same line to `logs/market_prices.log`.
+The default alert threshold is `1.0%`.
