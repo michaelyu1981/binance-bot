@@ -50,8 +50,8 @@ Completed features:
 - Configurable watch interval:
   - `python3 -m app.main --watch --interval 5`
 - Timestamped output in Philippine time, UTC+8.
-- Runtime log file:
-  - `logs/market_prices.log`
+- Daily runtime log files:
+  - `logs/market_prices-YYYY-MM-DD.log`
 - Local price-change alerts in watch mode.
 - Configurable alert threshold:
   - `python3 -m app.main --watch --interval 5 --alert-threshold 1`
@@ -67,7 +67,9 @@ Completed features:
   endpoint failures can be logged without stopping the monitor.
 - Consider reading watchlist and alert settings from a safe non-secret config
   file later if the list grows.
-- Consider log rotation so `logs/market_prices.log` does not grow forever.
+- Consider retention cleanup so old daily logs do not grow forever.
+- Prepare and review DigitalOcean deployment using
+  `docs/digitalocean-deployment.md`.
 
 ### Phase 2: Read-Only Account Monitor
 

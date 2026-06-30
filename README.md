@@ -102,10 +102,10 @@ python3 -m app.main --summary --send-telegram
 ```
 
 Every run prints timestamped public prices in Philippine time, UTC+8, and
-appends the same lines to:
+appends the same lines to a daily log file:
 
 ```text
-logs/market_prices.log
+logs/market_prices-YYYY-MM-DD.log
 ```
 
 The log contains only timestamps, symbols, and public market prices. It must not
@@ -114,7 +114,7 @@ credentials.
 
 In watch mode, the monitor compares each symbol's current public price to its
 previous cycle price. If the change is at least the configured threshold, it
-prints an `ALERT` line and appends the same line to `logs/market_prices.log`.
+prints an `ALERT` line and appends the same line to the current daily log file.
 The default alert threshold is `1.0%`.
 
 When watch mode starts, it prints the watchlist, interval, alert threshold,
@@ -126,7 +126,7 @@ does not print secrets.
 Summary mode reads only:
 
 ```text
-logs/market_prices.log
+logs/market_prices-YYYY-MM-DD.log
 ```
 
 It does not call Binance unless a future change explicitly adds that behavior.
@@ -142,6 +142,7 @@ The summary includes:
 
 The default summary period is the last 24 hours. Missing, empty, or unparseable
 logs are handled with a local message instead of an exception traceback.
+Legacy `logs/market_prices.log` is still read as a fallback if it exists.
 
 ## Optional Telegram alerts
 
@@ -237,7 +238,7 @@ TELEGRAM_CHAT_ID=
 
 The `.env` file is ignored by Git and is excluded from the Docker image build
 context. Logs are mounted from `./logs` to `/app/logs` so
-`logs/market_prices.log` persists outside the container.
+daily market price logs persist outside the container.
 
 Avoid running `docker compose config` with real secrets loaded, because Docker
 Compose may print expanded environment values to the terminal.

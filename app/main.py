@@ -46,7 +46,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--summary",
         action="store_true",
-        help="Build a summary from logs/market_prices.log without fetching Binance data.",
+        help="Build a summary from local market price logs without fetching Binance data.",
     )
     parser.add_argument(
         "--summary-hours",

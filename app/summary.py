@@ -9,7 +9,12 @@ from pathlib import Path
 import re
 
 from app.alerts import format_signed_percent
-from app.logger import MARKET_PRICE_LOG_PATH, current_timestamp
+from app.logger import (
+    MARKET_PRICE_LOG_DIR,
+    MARKET_PRICE_LOG_PATH,
+    daily_market_price_log_path,
+    current_timestamp,
+)
 
 
 DEFAULT_SUMMARY_HOURS = 24
@@ -60,36 +65,45 @@ class MarketSummary:
     alert_entries: tuple[AlertLogEntry, ...]
     symbol_summaries: tuple[SymbolSummary, ...]
     biggest_mover: SymbolSummary | None
-    log_path: Path
+    log_paths: tuple[Path, ...]
     message: str | None = None
 
 
 def build_market_summary(
     *,
-    log_path: Path = MARKET_PRICE_LOG_PATH,
+    log_path: Path | None = None,
     summary_hours: int = DEFAULT_SUMMARY_HOURS,
 ) -> MarketSummary:
-    """Build a market summary from the local log file only."""
+    """Build a market summary from local log files only."""
 
     report_timestamp = current_timestamp()
     if summary_hours <= 0:
         raise ValueError("summary_hours must be positive.")
 
-    if not log_path.exists():
+    report_datetime = datetime.fromisoformat(report_timestamp)
+    cutoff_timestamp = report_datetime - timedelta(hours=summary_hours)
+    log_paths = _summary_log_paths(
+        start_datetime=cutoff_timestamp,
+        end_datetime=report_datetime,
+        log_path=log_path,
+    )
+
+    existing_log_paths = tuple(path for path in log_paths if path.exists())
+    if not existing_log_paths:
         return _empty_summary(
             report_timestamp=report_timestamp,
             summary_hours=summary_hours,
-            log_path=log_path,
-            message=f"Log file not found: {log_path}",
+            log_paths=log_paths,
+            message=f"Log files not found: {_format_log_paths(log_paths)}",
         )
 
-    raw_lines = log_path.read_text(encoding="utf-8").splitlines()
+    raw_lines = _read_log_lines(existing_log_paths)
     if not raw_lines:
         return _empty_summary(
             report_timestamp=report_timestamp,
             summary_hours=summary_hours,
-            log_path=log_path,
-            message=f"Log file is empty: {log_path}",
+            log_paths=existing_log_paths,
+            message=f"Log files are empty: {_format_log_paths(existing_log_paths)}",
         )
 
     price_entries, alert_entries = _parse_log_lines(raw_lines)
@@ -97,12 +111,9 @@ def build_market_summary(
         return _empty_summary(
             report_timestamp=report_timestamp,
             summary_hours=summary_hours,
-            log_path=log_path,
+            log_paths=existing_log_paths,
             message="No parseable price or alert lines found in the log file.",
         )
-
-    report_datetime = datetime.fromisoformat(report_timestamp)
-    cutoff_timestamp = report_datetime - timedelta(hours=summary_hours)
 
     period_price_entries = tuple(
         entry for entry in price_entries if entry.timestamp >= cutoff_timestamp
@@ -124,7 +135,7 @@ def build_market_summary(
         alert_entries=period_alert_entries,
         symbol_summaries=symbol_summaries,
         biggest_mover=biggest_mover,
-        log_path=log_path,
+        log_paths=existing_log_paths,
     )
 
 
@@ -135,7 +146,7 @@ def format_market_summary(summary: MarketSummary) -> str:
         "Binance public market summary",
         f"Report timestamp: {summary.report_timestamp}",
         f"Summary period: last {summary.summary_hours} hours",
-        f"Log file: {summary.log_path}",
+        f"Log files: {_format_log_paths(summary.log_paths)}",
         "Safety: public market data only; no API key, no account access, no orders.",
     ]
 
@@ -179,7 +190,7 @@ def _empty_summary(
     *,
     report_timestamp: str,
     summary_hours: int,
-    log_path: Path,
+    log_paths: tuple[Path, ...],
     message: str,
 ) -> MarketSummary:
     return MarketSummary(
@@ -189,9 +200,43 @@ def _empty_summary(
         alert_entries=(),
         symbol_summaries=(),
         biggest_mover=None,
-        log_path=log_path,
+        log_paths=log_paths,
         message=message,
     )
+
+
+def _summary_log_paths(
+    *,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    log_path: Path | None,
+) -> tuple[Path, ...]:
+    if log_path is not None:
+        return (log_path,)
+
+    paths: list[Path] = []
+    current_date = start_datetime.date()
+    while current_date <= end_datetime.date():
+        paths.append(daily_market_price_log_path(current_date=current_date))
+        current_date += timedelta(days=1)
+
+    if MARKET_PRICE_LOG_PATH.exists():
+        paths.append(MARKET_PRICE_LOG_PATH)
+
+    return tuple(dict.fromkeys(paths))
+
+
+def _read_log_lines(log_paths: tuple[Path, ...]) -> list[str]:
+    raw_lines: list[str] = []
+    for path in log_paths:
+        raw_lines.extend(path.read_text(encoding="utf-8").splitlines())
+    return raw_lines
+
+
+def _format_log_paths(log_paths: tuple[Path, ...]) -> str:
+    if not log_paths:
+        return str(MARKET_PRICE_LOG_DIR)
+    return ", ".join(str(path) for path in log_paths)
 
 
 def _parse_log_lines(lines: list[str]) -> tuple[tuple[PriceLogEntry, ...], tuple[AlertLogEntry, ...]]:

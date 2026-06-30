@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -10,6 +10,8 @@ from app.binance_reader import MarketPrice
 
 
 MARKET_PRICE_LOG_PATH = Path("logs/market_prices.log")
+MARKET_PRICE_LOG_DIR = Path("logs")
+MARKET_PRICE_LOG_PREFIX = "market_prices"
 PHILIPPINE_TIME = timezone(timedelta(hours=8), name="PHT")
 
 
@@ -32,11 +34,26 @@ def format_market_price_lines(
 def append_market_price_log(
     lines: Iterable[str],
     *,
-    log_path: Path = MARKET_PRICE_LOG_PATH,
+    log_path: Path | None = None,
 ) -> None:
     """Append timestamped public market prices to the runtime log file."""
+
+    if log_path is None:
+        log_path = daily_market_price_log_path()
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log_file:
         for line in lines:
             log_file.write(f"{line}\n")
+
+
+def daily_market_price_log_path(
+    *,
+    current_date: date | None = None,
+    log_dir: Path = MARKET_PRICE_LOG_DIR,
+) -> Path:
+    """Return the Philippine-date log path for public market prices."""
+
+    if current_date is None:
+        current_date = datetime.now(PHILIPPINE_TIME).date()
+    return log_dir / f"{MARKET_PRICE_LOG_PREFIX}-{current_date.isoformat()}.log"
