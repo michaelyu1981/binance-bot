@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import time
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 
-from app.binance_reader import BinancePublicMarketError, MarketPrice, fetch_public_prices
-from app.config import PUBLIC_MARKET_WATCHLIST
-from app.logger import append_market_price_log, current_timestamp, format_market_price_lines
-from app.telegram_notifier import TelegramSendError, send_alert_lines_to_telegram
+from app.monitor import run_once, run_watch
+from app.summary import DEFAULT_SUMMARY_HOURS, build_market_summary, format_market_summary
+from app.telegram_notifier import TelegramSendError, send_summary_to_telegram
 
 
 DEFAULT_WATCH_INTERVAL_SECONDS = 60
@@ -45,100 +43,63 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="N",
         help="Price-change alert threshold percentage for watch mode. Default: 1.0.",
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Build a summary from logs/market_prices.log without fetching Binance data.",
+    )
+    parser.add_argument(
+        "--summary-hours",
+        type=_positive_int,
+        default=DEFAULT_SUMMARY_HOURS,
+        metavar="N",
+        help="Summary lookback period in hours. Default: 24.",
+    )
+    parser.add_argument(
+        "--send-telegram",
+        action="store_true",
+        help="Send summary mode output to Telegram when Telegram env vars are configured.",
+    )
     return parser.parse_args(argv)
 
 
-def run_once() -> int:
-    """Fetch, print, and log configured public spot market prices once."""
-
-    return 0 if run_price_cycle() is not None else 1
-
-
-def run_price_cycle() -> list[MarketPrice] | None:
-    """Fetch, print, and log configured public spot market prices."""
+def run_summary(summary_hours: int, *, send_telegram: bool) -> int:
+    """Build and optionally send a summary from the local market log."""
 
     try:
-        prices = fetch_public_prices(PUBLIC_MARKET_WATCHLIST)
-    except BinancePublicMarketError as exc:
+        summary = build_market_summary(summary_hours=summary_hours)
+    except ValueError as exc:
         print(f"Error: {exc}")
-        return None
+        return 1
 
-    timestamp = current_timestamp()
-    price_lines = format_market_price_lines(prices, timestamp=timestamp)
-    append_market_price_log(price_lines)
+    summary_text = format_market_summary(summary)
+    print(summary_text)
 
-    print("Read-only Binance public market prices")
-    print("No API key. No account access. No orders.")
-    for line in price_lines:
-        print(line)
+    if send_telegram:
+        try:
+            sent = send_summary_to_telegram(summary_text)
+        except TelegramSendError as exc:
+            print(f"Telegram summary send failed: {exc}")
+            return 1
 
-    return prices
-
-
-def run_watch(interval_seconds: int, alert_threshold_percent: Decimal) -> int:
-    """Fetch, print, and log public prices until interrupted."""
-
-    previous_prices: dict[str, Decimal] = {}
-
-    try:
-        while True:
-            prices = run_price_cycle()
-            if prices is None:
-                return 1
-
-            alert_lines = build_alert_lines(
-                prices,
-                previous_prices,
-                alert_threshold_percent=alert_threshold_percent,
-                timestamp=current_timestamp(),
-            )
-            if alert_lines:
-                append_market_price_log(alert_lines)
-                for line in alert_lines:
-                    print(line)
-                try:
-                    send_alert_lines_to_telegram(alert_lines)
-                except TelegramSendError as exc:
-                    print(f"Telegram alert send failed: {exc}")
-
-            previous_prices = {price.symbol: price.price for price in prices}
-            time.sleep(interval_seconds)
-    except KeyboardInterrupt:
-        print("Stopping read-only Binance public market monitor.")
-        return 0
-
-
-def build_alert_lines(
-    prices: Sequence[MarketPrice],
-    previous_prices: dict[str, Decimal],
-    *,
-    alert_threshold_percent: Decimal,
-    timestamp: str,
-) -> list[str]:
-    """Build local alert lines for prices crossing the configured threshold."""
-
-    alert_lines: list[str] = []
-
-    for price in prices:
-        previous_price = previous_prices.get(price.symbol)
-        if previous_price is None or previous_price == 0:
-            continue
-
-        change_percent = ((price.price - previous_price) / previous_price) * Decimal("100")
-        if change_percent != 0 and abs(change_percent) >= alert_threshold_percent:
-            alert_lines.append(
-                f"{timestamp} ALERT {price.symbol}: "
-                f"{_format_signed_percent(change_percent)} "
-                f"from {previous_price} to {price.price}"
+        if sent:
+            print("Telegram summary sent.")
+        else:
+            print(
+                "Warning: Telegram summary not sent because TELEGRAM_BOT_TOKEN "
+                "and TELEGRAM_CHAT_ID are not both configured."
             )
 
-    return alert_lines
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the read-only public market monitor."""
 
     args = parse_args(argv)
+    if args.summary:
+        return run_summary(args.summary_hours, send_telegram=args.send_telegram)
+
     if args.watch:
         return run_watch(args.interval, args.alert_threshold)
     return run_once()
@@ -147,7 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _positive_int(value: str) -> int:
     parsed_value = int(value)
     if parsed_value <= 0:
-        raise argparse.ArgumentTypeError("interval must be a positive integer")
+        raise argparse.ArgumentTypeError("value must be a positive integer")
     return parsed_value
 
 
@@ -160,10 +121,6 @@ def _non_negative_decimal(value: str) -> Decimal:
     if parsed_value < 0:
         raise argparse.ArgumentTypeError("value must be zero or greater")
     return parsed_value
-
-
-def _format_signed_percent(value: Decimal) -> str:
-    return f"{value:+.2f}%"
 
 
 if __name__ == "__main__":

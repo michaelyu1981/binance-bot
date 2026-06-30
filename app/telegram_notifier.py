@@ -37,6 +37,12 @@ def load_telegram_config_from_env() -> TelegramConfig | None:
     return TelegramConfig(bot_token=bot_token, chat_id=chat_id)
 
 
+def is_telegram_enabled() -> bool:
+    """Return whether Telegram settings are present without exposing values."""
+
+    return load_telegram_config_from_env() is not None
+
+
 def send_telegram_message(
     message: str,
     config: TelegramConfig,
@@ -92,3 +98,17 @@ def send_alert_lines_to_telegram(alert_lines: list[str]) -> None:
         return
 
     send_telegram_message("\n".join(alert_lines), config)
+
+
+def send_summary_to_telegram(summary_text: str) -> bool:
+    """Send a summary to Telegram when configured.
+
+    Returns False when Telegram env vars are missing.
+    """
+
+    config = load_telegram_config_from_env()
+    if config is None:
+        return False
+
+    send_telegram_message(summary_text, config)
+    return True
