@@ -805,11 +805,12 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         y = chart_top + ((high - close) / spread) * chart_height
         points.append(f"{x:.2f},{y:.2f}")
 
-    middle = (high + low) / Decimal("2")
-    price_ticks = (
-        (high, chart_top),
-        (middle, chart_top + (chart_height / Decimal("2"))),
-        (low, chart_top + chart_height),
+    price_ticks = tuple(
+        (
+            high - ((spread / Decimal("6")) * Decimal(index)),
+            chart_top + ((chart_height / Decimal("6")) * Decimal(index)),
+        )
+        for index in range(7)
     )
     price_grid = "".join(
         (
@@ -821,13 +822,13 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         for price, y in price_ticks
     )
 
-    first_time = _format_axis_time(candles[0].open_time_ms)
-    middle_time = _format_axis_time(candles[len(candles) // 2].open_time_ms)
-    latest_time = _format_axis_time(candles[-1].open_time_ms)
-    x_ticks = (
-        (chart_left, first_time, "start"),
-        (chart_left + (chart_width / Decimal("2")), middle_time, "middle"),
-        (width - chart_right, latest_time, "end"),
+    x_ticks = tuple(
+        (
+            chart_left + ((chart_width / Decimal("6")) * Decimal(index)),
+            _format_axis_time(candles[round((len(candles) - 1) * (index / 6))].open_time_ms),
+            _axis_label_anchor(index),
+        )
+        for index in range(7)
     )
     time_labels = "".join(
         (
@@ -868,6 +869,14 @@ def _format_axis_price(price: Decimal) -> str:
     if price >= Decimal("1"):
         return f"{price:.4f}"
     return f"{price:.6f}"
+
+
+def _axis_label_anchor(index: int) -> str:
+    if index == 0:
+        return "start"
+    if index == 6:
+        return "end"
+    return "middle"
 
 
 def _is_auth_required() -> bool:
