@@ -144,6 +144,27 @@ def calculate_bollinger_bands(
     return upper, middle, lower
 
 
+def calculate_bollinger_band_series(
+    closes: Sequence[Decimal],
+    period: int = BOLLINGER_PERIOD,
+    stddev_multiplier: Decimal = BOLLINGER_STDDEV_MULTIPLIER,
+) -> tuple[tuple[Decimal | None, Decimal | None, Decimal | None], ...]:
+    """Return upper, middle, lower Bollinger values aligned to close prices."""
+
+    values: list[tuple[Decimal | None, Decimal | None, Decimal | None]] = []
+    for index in range(len(closes)):
+        if index + 1 < period:
+            values.append((None, None, None))
+            continue
+        bands = calculate_bollinger_bands(
+            closes[: index + 1],
+            period=period,
+            stddev_multiplier=stddev_multiplier,
+        )
+        values.append(bands if bands is not None else (None, None, None))
+    return tuple(values)
+
+
 def calculate_macd(
     closes: Sequence[Decimal],
     *,

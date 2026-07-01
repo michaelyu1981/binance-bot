@@ -36,6 +36,7 @@ from app.summary import (
 from app.indicators import (
     IndicatorSnapshot,
     build_indicator_snapshot,
+    calculate_bollinger_band_series,
     describe_average_position,
     describe_atr,
     describe_bollinger,
@@ -866,17 +867,28 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
     chart_width = width - chart_left - chart_right
     chart_height = height - chart_top - chart_bottom
     closes = [candle.close_price for candle in candles]
-    low = min(closes)
-    high = max(closes)
+    bollinger_bands = calculate_bollinger_band_series(closes)
+    bollinger_values = [
+        value
+        for bands in bollinger_bands
+        for value in bands
+        if value is not None
+    ]
+    low = min(closes + bollinger_values)
+    high = max(closes + bollinger_values)
     spread = high - low
     if spread == 0:
         spread = Decimal("1")
 
+    def point_for_value(index: int, value: Decimal) -> tuple[Decimal, Decimal]:
+        x = chart_left + (Decimal(index) / Decimal(len(closes) - 1)) * chart_width
+        y = chart_top + ((high - value) / spread) * chart_height
+        return x, y
+
     points = []
     point_metadata = []
     for index, close in enumerate(closes):
-        x = chart_left + (Decimal(index) / Decimal(len(closes) - 1)) * chart_width
-        y = chart_top + ((high - close) / spread) * chart_height
+        x, y = point_for_value(index, close)
         points.append(f"{x:.2f},{y:.2f}")
         point_metadata.append(
             {
@@ -920,9 +932,36 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         for x, label, anchor in x_ticks
     )
 
+    bollinger_upper_points = _series_points(
+        tuple((index, bands[0]) for index, bands in enumerate(bollinger_bands)),
+        point_for_value,
+    )
+    bollinger_middle_points = _series_points(
+        tuple((index, bands[1]) for index, bands in enumerate(bollinger_bands)),
+        point_for_value,
+    )
+    bollinger_lower_points = _series_points(
+        tuple((index, bands[2]) for index, bands in enumerate(bollinger_bands)),
+        point_for_value,
+    )
+    bollinger_overlay = (
+        f"<polyline points=\"{bollinger_upper_points}\" fill=\"none\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" opacity=\"0.8\" />"
+        f"<polyline points=\"{bollinger_middle_points}\" fill=\"none\" stroke=\"#475569\" stroke-width=\"2\" opacity=\"0.65\" />"
+        f"<polyline points=\"{bollinger_lower_points}\" fill=\"none\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" opacity=\"0.8\" />"
+        if bollinger_upper_points and bollinger_middle_points and bollinger_lower_points
+        else ""
+    )
+    legend = (
+        "<g>"
+        "<line x1=\"718\" y1=\"20\" x2=\"756\" y2=\"20\" stroke=\"#1f6feb\" stroke-width=\"3\" />"
+        "<text x=\"764\" y=\"24\" font-size=\"13\" fill=\"#647084\">Close</text>"
+        "<line x1=\"818\" y1=\"20\" x2=\"856\" y2=\"20\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" />"
+        "<text x=\"864\" y=\"24\" font-size=\"13\" fill=\"#647084\">Bollinger</text>"
+        "</g>"
+    )
+
     latest_close = closes[-1]
-    latest_x = width - chart_right
-    latest_y = chart_top + ((high - latest_close) / spread) * chart_height
+    latest_x, latest_y = point_for_value(len(closes) - 1, latest_close)
     return (
         "<div class=\"chart-wrap\" "
         f"data-points=\"{escape(json.dumps(point_metadata, separators=(',', ':')))}\">"
@@ -931,16 +970,31 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         f"<line x1=\"{chart_left:.2f}\" y1=\"{chart_top:.2f}\" x2=\"{chart_left:.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
         f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
         f"<line class=\"hover-guide\" x1=\"0\" y1=\"{chart_top:.2f}\" x2=\"0\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#087f5b\" stroke-width=\"1\" opacity=\"0\" />"
+        f"{bollinger_overlay}"
         f"<polyline points=\"{' '.join(points)}\" fill=\"none\" stroke=\"#1f6feb\" stroke-width=\"3\" />"
         f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"5\" fill=\"#1f6feb\" />"
         "<circle class=\"hover-marker\" cx=\"0\" cy=\"0\" r=\"6\" fill=\"#087f5b\" stroke=\"#ffffff\" stroke-width=\"2\" opacity=\"0\" />"
         f"<text x=\"{(latest_x - Decimal('8')):.2f}\" y=\"{(latest_y - Decimal('10')):.2f}\" font-size=\"13\" fill=\"#1f6feb\" text-anchor=\"end\">"
         f"{escape(_format_axis_price(latest_close))}</text>"
+        f"{legend}"
         f"{time_labels}"
         "</svg>"
         "<div class=\"chart-tooltip\"></div>"
         "</div>"
     )
+
+
+def _series_points(
+    values: tuple[tuple[int, Decimal | None], ...],
+    point_for_value: Callable[[int, Decimal], tuple[Decimal, Decimal]],
+) -> str:
+    points = []
+    for index, value in values:
+        if value is None:
+            continue
+        x, y = point_for_value(index, value)
+        points.append(f"{x:.2f},{y:.2f}")
+    return " ".join(points)
 
 
 def _format_candle_time(open_time_ms: int) -> str:
