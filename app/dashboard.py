@@ -37,7 +37,9 @@ from app.indicators import (
     IndicatorSnapshot,
     build_indicator_snapshot,
     calculate_bollinger_band_series,
+    calculate_ema_series,
     calculate_rsi_series,
+    calculate_sma_series,
     describe_average_position,
     describe_atr,
     describe_bollinger,
@@ -662,6 +664,28 @@ def _shared_page_css() -> str:
     }
     .rsi-chart { height: 132px; margin-top: 10px; }
     .volume-chart { height: 116px; margin-top: 10px; }
+    .chart-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 10px;
+      color: var(--muted);
+    }
+    .chart-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0;
+    }
+    .chart-toggle {
+      width: auto;
+      margin: 0;
+    }
+    .chart-wrap.hide-bollinger .bollinger-overlay,
+    .chart-wrap.hide-ema .ema-overlay,
+    .chart-wrap.hide-sma .sma-overlay {
+      display: none;
+    }
     .chart-wrap {
       position: relative;
     }
@@ -970,6 +994,8 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
     chart_width = width - chart_left - chart_right
     chart_height = height - chart_top - chart_bottom
     closes = [candle.close_price for candle in candles]
+    ema_values = calculate_ema_series(closes, 20)
+    sma_values = calculate_sma_series(closes, 50)
     candle_prices = [
         price
         for candle in candles
@@ -987,8 +1013,9 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         for value in bands
         if value is not None
     ]
-    low = min(candle_prices + bollinger_values)
-    high = max(candle_prices + bollinger_values)
+    moving_average_values = [value for value in (*ema_values, *sma_values) if value is not None]
+    low = min(candle_prices + bollinger_values + moving_average_values)
+    high = max(candle_prices + bollinger_values + moving_average_values)
     spread = high - low
     if spread == 0:
         spread = Decimal("1")
@@ -1079,26 +1106,46 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         point_for_value,
     )
     bollinger_overlay = (
+        "<g class=\"bollinger-overlay\">"
         f"<polyline points=\"{bollinger_upper_points}\" fill=\"none\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" opacity=\"0.8\" />"
         f"<polyline points=\"{bollinger_middle_points}\" fill=\"none\" stroke=\"#475569\" stroke-width=\"2\" opacity=\"0.65\" />"
         f"<polyline points=\"{bollinger_lower_points}\" fill=\"none\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" opacity=\"0.8\" />"
+        "</g>"
         if bollinger_upper_points and bollinger_middle_points and bollinger_lower_points
+        else ""
+    )
+    ema_points = _series_points(
+        tuple((index, value) for index, value in enumerate(ema_values)),
+        point_for_value,
+    )
+    sma_points = _series_points(
+        tuple((index, value) for index, value in enumerate(sma_values)),
+        point_for_value,
+    )
+    moving_average_overlay = (
+        f"<polyline class=\"ema-overlay\" points=\"{ema_points}\" fill=\"none\" stroke=\"#f59e0b\" stroke-width=\"2.4\" opacity=\"0.9\" />"
+        if ema_points
+        else ""
+    ) + (
+        f"<polyline class=\"sma-overlay\" points=\"{sma_points}\" fill=\"none\" stroke=\"#0f766e\" stroke-width=\"2.4\" opacity=\"0.9\" />"
+        if sma_points
         else ""
     )
     legend = (
         "<g>"
-        "<rect x=\"686\" y=\"14\" width=\"11\" height=\"11\" fill=\"#087f5b\" opacity=\"0.82\" />"
-        "<text x=\"704\" y=\"24\" font-size=\"13\" fill=\"#647084\">Green close up</text>"
-        "<rect x=\"812\" y=\"14\" width=\"11\" height=\"11\" fill=\"#c92a2a\" opacity=\"0.82\" />"
-        "<text x=\"830\" y=\"24\" font-size=\"13\" fill=\"#647084\">Red close down</text>"
-        "<line x1=\"686\" y1=\"38\" x2=\"724\" y2=\"38\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" />"
-        "<text x=\"732\" y=\"42\" font-size=\"13\" fill=\"#647084\">Bollinger</text>"
+        "<line x1=\"604\" y1=\"20\" x2=\"634\" y2=\"20\" stroke=\"#f59e0b\" stroke-width=\"2.4\" />"
+        "<text x=\"642\" y=\"24\" font-size=\"13\" fill=\"#647084\">EMA20</text>"
+        "<line x1=\"704\" y1=\"20\" x2=\"734\" y2=\"20\" stroke=\"#0f766e\" stroke-width=\"2.4\" />"
+        "<text x=\"742\" y=\"24\" font-size=\"13\" fill=\"#647084\">SMA50</text>"
+        "<line x1=\"804\" y1=\"20\" x2=\"834\" y2=\"20\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" />"
+        "<text x=\"842\" y=\"24\" font-size=\"13\" fill=\"#647084\">Bollinger</text>"
         "</g>"
     )
 
     latest_close = closes[-1]
     latest_x, latest_y = point_for_value(len(closes) - 1, latest_close)
     return (
+        f"{_render_chart_controls()}"
         "<div class=\"chart-wrap\" "
         f"data-points=\"{escape(json.dumps(point_metadata, separators=(',', ':')))}\">"
         "<svg class=\"sparkline\" viewBox=\"0 0 1000 260\" preserveAspectRatio=\"none\" role=\"img\">"
@@ -1107,6 +1154,7 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
         f"<line class=\"hover-guide\" x1=\"0\" y1=\"{chart_top:.2f}\" x2=\"0\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#087f5b\" stroke-width=\"1\" opacity=\"0\" />"
         f"{bollinger_overlay}"
+        f"{moving_average_overlay}"
         f"{''.join(candle_elements)}"
         f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"5\" fill=\"#1f6feb\" />"
         "<circle class=\"hover-marker\" cx=\"0\" cy=\"0\" r=\"6\" fill=\"#087f5b\" stroke=\"#ffffff\" stroke-width=\"2\" opacity=\"0\" />"
@@ -1116,6 +1164,16 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         f"{time_labels}"
         "</svg>"
         "<div class=\"chart-tooltip\"></div>"
+        "</div>"
+    )
+
+
+def _render_chart_controls() -> str:
+    return (
+        "<div class=\"chart-controls\">"
+        "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"bollinger\" checked> Bollinger</label>"
+        "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"ema\" checked> EMA20</label>"
+        "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"sma\" checked> SMA50</label>"
         "</div>"
     )
 
@@ -1312,6 +1370,18 @@ def _chart_interaction_script() -> str:
         svg.addEventListener("touchmove", (event) => {
           if (event.touches.length) update(event.touches[0]);
         }, { passive: true });
+      }
+
+      for (const controls of document.querySelectorAll(".chart-controls")) {
+        const wrapper = controls.nextElementSibling;
+        if (!wrapper || !wrapper.classList.contains("chart-wrap")) continue;
+        for (const checkbox of controls.querySelectorAll(".chart-toggle")) {
+          const apply = () => {
+            wrapper.classList.toggle(`hide-${checkbox.dataset.overlay}`, !checkbox.checked);
+          };
+          checkbox.addEventListener("change", apply);
+          apply();
+        }
       }
     })();
     """

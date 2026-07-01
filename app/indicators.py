@@ -128,6 +128,18 @@ def calculate_sma(closes: Sequence[Decimal], period: int) -> Decimal | None:
     return sum(values, Decimal("0")) / Decimal(period)
 
 
+def calculate_sma_series(
+    closes: Sequence[Decimal],
+    period: int,
+) -> tuple[Decimal | None, ...]:
+    """Return SMA values aligned to close prices."""
+
+    values: list[Decimal | None] = []
+    for index in range(len(closes)):
+        values.append(calculate_sma(closes[: index + 1], period))
+    return tuple(values)
+
+
 def calculate_ema(closes: Sequence[Decimal], period: int) -> Decimal | None:
     """Return the latest exponential moving average."""
 
@@ -135,6 +147,16 @@ def calculate_ema(closes: Sequence[Decimal], period: int) -> Decimal | None:
     if not values:
         return None
     return values[-1]
+
+
+def calculate_ema_series(
+    closes: Sequence[Decimal],
+    period: int,
+) -> tuple[Decimal | None, ...]:
+    """Return EMA values aligned to close prices."""
+
+    indexed_values = dict(_ema_series_with_index(closes, period))
+    return tuple(indexed_values.get(index) for index in range(len(closes)))
 
 
 def calculate_bollinger_bands(
