@@ -196,6 +196,80 @@ signals and do not enable trading.
 Log coverage is not Docker container uptime. It shows how long the dashboard can
 see continuous market data in the selected log window.
 
+## Public candle collection
+
+The candle collector stores public Binance kline/candlestick data in SQLite for
+later read-only technical analysis. It uses only unauthenticated public market
+data:
+
+- no Binance API key
+- no Binance account access
+- no buy/sell
+- no order endpoints
+
+Default symbols:
+
+- BTCUSDT
+- ETHUSDT
+- BNBUSDT
+- ZECUSDT
+- XTZUSDT
+
+Default intervals:
+
+- 1m
+- 5m
+- 15m
+- 1h
+- 4h
+- 1d
+
+Run one candle collection cycle:
+
+```bash
+python3 -m app.main --collect-candles
+```
+
+Fetch a smaller batch for testing:
+
+```bash
+python3 -m app.main --collect-candles --candle-limit 10
+```
+
+The SQLite database is stored at:
+
+```text
+data/market_data.sqlite3
+```
+
+Default candle retention is 90 days. After each collection cycle, rows older
+than the retention window are deleted:
+
+```bash
+python3 -m app.main --collect-candles --retention-days 90
+```
+
+For the 5 default symbols and 6 default intervals, 90 days is roughly 835,000
+candle rows. SQLite can handle this size. A practical size estimate is roughly
+250 MB to 750 MB depending on indexes and stored precision.
+
+SQLite normally reuses deleted space internally instead of immediately shrinking
+the file on disk. Run manual maintenance when needed:
+
+```bash
+python3 -m app.main --db-maintenance
+```
+
+To delete old rows and compact the SQLite file:
+
+```bash
+python3 -m app.main --db-maintenance --vacuum
+```
+
+Do not run `VACUUM` every collection cycle. Use it occasionally, such as weekly
+or monthly, because it can temporarily lock the database and require extra disk
+space while compacting.
+
 ## Optional Telegram alerts
 
 Telegram alerts are optional. They send only `ALERT` lines from watch mode when
@@ -253,6 +327,18 @@ Run a summary:
 
 ```bash
 docker compose run --rm binance-bot python3 -m app.main --summary
+```
+
+Run one public candle collection cycle:
+
+```bash
+docker compose run --rm binance-bot python3 -m app.main --collect-candles
+```
+
+Run candle DB maintenance:
+
+```bash
+docker compose run --rm binance-bot python3 -m app.main --db-maintenance
 ```
 
 Run a summary and send it to Telegram if configured:

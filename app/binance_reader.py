@@ -26,6 +26,25 @@ class MarketPrice:
     price: Decimal
 
 
+@dataclass(frozen=True)
+class Candle:
+    """A public spot market candlestick."""
+
+    symbol: str
+    interval: str
+    open_time_ms: int
+    close_time_ms: int
+    open_price: Decimal
+    high_price: Decimal
+    low_price: Decimal
+    close_price: Decimal
+    volume: Decimal
+    quote_volume: Decimal
+    trade_count: int
+    taker_buy_base_volume: Decimal
+    taker_buy_quote_volume: Decimal
+
+
 class BinancePublicMarketError(RuntimeError):
     """Raised when public Binance market data cannot be fetched or parsed."""
 
@@ -47,6 +66,61 @@ def fetch_public_prices(
     return [
         _fetch_public_price(symbol, timeout_seconds=timeout_seconds)
         for symbol in normalized_symbols
+    ]
+
+
+def fetch_public_candles(
+    symbol: str,
+    interval: str,
+    *,
+    limit: int = 100,
+    timeout_seconds: float = 10.0,
+) -> list[Candle]:
+    """Fetch public spot candles from Binance's unauthenticated klines endpoint."""
+
+    normalized_symbol = _normalize_symbol(symbol)
+    normalized_interval = interval.strip()
+    if not normalized_interval:
+        raise ValueError("Interval cannot be empty.")
+    if limit <= 0 or limit > 1000:
+        raise ValueError("limit must be between 1 and 1000.")
+
+    query = urlencode(
+        {
+            "symbol": normalized_symbol,
+            "interval": normalized_interval,
+            "limit": limit,
+        }
+    )
+    url = f"{PUBLIC_SPOT_API_BASE_URL}/api/v3/klines?{query}"
+
+    try:
+        with urlopen(url, timeout=timeout_seconds) as response:
+            payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        raise BinancePublicMarketError(
+            f"Binance public candle request failed with HTTP {exc.code}."
+        ) from exc
+    except URLError as exc:
+        raise BinancePublicMarketError(
+            f"Could not reach Binance public candle endpoint: {exc.reason}"
+        ) from exc
+
+    try:
+        raw_candles = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise BinancePublicMarketError("Binance returned invalid candle JSON.") from exc
+
+    if not isinstance(raw_candles, list):
+        raise BinancePublicMarketError("Binance candle response was not a list.")
+
+    return [
+        _parse_candle(
+            item,
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+        )
+        for item in raw_candles
     ]
 
 
@@ -96,3 +170,39 @@ def _parse_market_price(item: object) -> MarketPrice:
         raise BinancePublicMarketError(f"Ticker price for {symbol} was invalid.") from exc
 
     return MarketPrice(symbol=symbol, price=parsed_price)
+
+
+def _parse_candle(item: object, *, symbol: str, interval: str) -> Candle:
+    if not isinstance(item, list) or len(item) < 11:
+        raise BinancePublicMarketError("Candle item was not a valid kline array.")
+
+    try:
+        open_time_ms = int(item[0])
+        close_time_ms = int(item[6])
+        trade_count = int(item[8])
+        open_price = Decimal(str(item[1]))
+        high_price = Decimal(str(item[2]))
+        low_price = Decimal(str(item[3]))
+        close_price = Decimal(str(item[4]))
+        volume = Decimal(str(item[5]))
+        quote_volume = Decimal(str(item[7]))
+        taker_buy_base_volume = Decimal(str(item[9]))
+        taker_buy_quote_volume = Decimal(str(item[10]))
+    except (ValueError, TypeError, InvalidOperation) as exc:
+        raise BinancePublicMarketError("Candle item contained invalid values.") from exc
+
+    return Candle(
+        symbol=symbol,
+        interval=interval,
+        open_time_ms=open_time_ms,
+        close_time_ms=close_time_ms,
+        open_price=open_price,
+        high_price=high_price,
+        low_price=low_price,
+        close_price=close_price,
+        volume=volume,
+        quote_volume=quote_volume,
+        trade_count=trade_count,
+        taker_buy_base_volume=taker_buy_base_volume,
+        taker_buy_quote_volume=taker_buy_quote_volume,
+    )
