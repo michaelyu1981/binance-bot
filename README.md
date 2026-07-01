@@ -182,6 +182,9 @@ The dashboard also shows read-only operational visibility:
 
 - monitor health based on the latest log timestamp
 - last update age
+- first and latest log time in the selected summary window
+- log coverage duration from first price line to latest price line
+- price cycle count based on grouped timestamps
 - alert count for the selected summary window
 - alert count for the current Philippine date
 - recent alert history
@@ -189,6 +192,9 @@ The dashboard also shows read-only operational visibility:
 
 These values are calculated from local log files only. They are not buy/sell
 signals and do not enable trading.
+
+Log coverage is not Docker container uptime. It shows how long the dashboard can
+see continuous market data in the selected log window.
 
 ## Optional Telegram alerts
 

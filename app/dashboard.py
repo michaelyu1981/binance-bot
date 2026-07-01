@@ -45,6 +45,14 @@ class AlertStats:
     biggest_today: AlertLogEntry | None
 
 
+@dataclass(frozen=True)
+class LogCoverage:
+    first_time: str
+    latest_time: str
+    duration: str
+    price_cycles: int
+
+
 def run_dashboard_server(
     *,
     host: str = DEFAULT_DASHBOARD_HOST,
@@ -116,6 +124,7 @@ def render_dashboard(summary: MarketSummary) -> str:
     health_status, last_update_age = _health_status(summary, report_datetime)
     alert_stats = _alert_stats(summary, report_datetime)
     trend_rows = _trend_rows(summary, report_datetime)
+    log_coverage = _log_coverage(summary)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -237,6 +246,12 @@ def render_dashboard(summary: MarketSummary) -> str:
       {_metric_card("Last Update Age", last_update_age)}
       {_metric_card("Expected Interval", f"{EXPECTED_WATCH_INTERVAL_SECONDS} seconds")}
       {_metric_card("Timezone", "Philippine time UTC+8")}
+    </section>
+    <section class="grid">
+      {_metric_card("First Log Time", log_coverage.first_time)}
+      {_metric_card("Latest Log Time", log_coverage.latest_time)}
+      {_metric_card("Log Coverage", log_coverage.duration)}
+      {_metric_card("Price Cycles", str(log_coverage.price_cycles))}
     </section>
     <section class="panel" style="margin-bottom:18px;">
       <h2>Prices</h2>
@@ -420,6 +435,30 @@ def _health_status(
     if age_seconds <= STALE_AFTER_SECONDS:
         return "OK", age_label
     return "STALE", age_label
+
+
+def _log_coverage(summary: MarketSummary) -> LogCoverage:
+    if not summary.price_entries:
+        return LogCoverage(
+            first_time="No data",
+            latest_time="No data",
+            duration="No data",
+            price_cycles=0,
+        )
+
+    first_entry = min(summary.price_entries, key=lambda entry: entry.timestamp)
+    latest_entry = max(summary.price_entries, key=lambda entry: entry.timestamp)
+    duration_seconds = max(
+        0,
+        int((latest_entry.timestamp - first_entry.timestamp).total_seconds()),
+    )
+    price_cycles = len({entry.raw_timestamp for entry in summary.price_entries})
+    return LogCoverage(
+        first_time=_format_philippine_time_label(first_entry.raw_timestamp),
+        latest_time=_format_philippine_time_label(latest_entry.raw_timestamp),
+        duration=_format_duration(duration_seconds),
+        price_cycles=price_cycles,
+    )
 
 
 def _trend_rows(
