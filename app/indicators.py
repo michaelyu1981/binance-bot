@@ -227,6 +227,42 @@ def calculate_macd(
     return macd, signal, macd - signal
 
 
+def calculate_macd_series(
+    closes: Sequence[Decimal],
+    *,
+    fast_period: int = MACD_FAST_PERIOD,
+    slow_period: int = MACD_SLOW_PERIOD,
+    signal_period: int = MACD_SIGNAL_PERIOD,
+) -> tuple[tuple[Decimal | None, Decimal | None, Decimal | None], ...]:
+    """Return MACD, signal, and histogram values aligned to close prices."""
+
+    fast_ema_by_index = dict(_ema_series_with_index(closes, fast_period))
+    slow_ema_by_index = dict(_ema_series_with_index(closes, slow_period))
+    macd_by_index = {
+        index: fast_ema_by_index[index] - slow_ema
+        for index, slow_ema in sorted(slow_ema_by_index.items())
+        if index in fast_ema_by_index
+    }
+    if len(macd_by_index) < signal_period:
+        return tuple((None, None, None) for _ in closes)
+
+    macd_indices = tuple(sorted(macd_by_index))
+    macd_values = tuple(macd_by_index[index] for index in macd_indices)
+    signal_values = _ema_series(macd_values, signal_period)
+    signal_by_index = {
+        macd_indices[(signal_period - 1) + offset]: value
+        for offset, value in enumerate(signal_values)
+    }
+
+    values: list[tuple[Decimal | None, Decimal | None, Decimal | None]] = []
+    for index in range(len(closes)):
+        macd = macd_by_index.get(index)
+        signal = signal_by_index.get(index)
+        histogram = macd - signal if macd is not None and signal is not None else None
+        values.append((macd, signal, histogram))
+    return tuple(values)
+
+
 def calculate_atr(
     *,
     highs: Sequence[Decimal],
@@ -256,6 +292,28 @@ def calculate_atr(
         )
 
     return sum(true_ranges, Decimal("0")) / Decimal(period)
+
+
+def calculate_atr_series(
+    *,
+    highs: Sequence[Decimal],
+    lows: Sequence[Decimal],
+    closes: Sequence[Decimal],
+    period: int = ATR_PERIOD,
+) -> tuple[Decimal | None, ...]:
+    """Return ATR values aligned to close prices."""
+
+    values: list[Decimal | None] = []
+    for index in range(len(closes)):
+        values.append(
+            calculate_atr(
+                highs=highs[: index + 1],
+                lows=lows[: index + 1],
+                closes=closes[: index + 1],
+                period=period,
+            )
+        )
+    return tuple(values)
 
 
 def describe_rsi(value: Decimal | None) -> str:

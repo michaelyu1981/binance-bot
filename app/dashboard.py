@@ -36,8 +36,10 @@ from app.summary import (
 from app.indicators import (
     IndicatorSnapshot,
     build_indicator_snapshot,
+    calculate_atr_series,
     calculate_bollinger_band_series,
     calculate_ema_series,
+    calculate_macd_series,
     calculate_rsi_series,
     calculate_sma_series,
     describe_average_position,
@@ -395,6 +397,7 @@ def render_dashboard(summary: MarketSummary) -> str:
       border: 1px solid var(--line);
       border-radius: 8px;
     }}
+    .indicator-chart {{ height: 132px; margin-top: 10px; }}
     .rsi-chart {{ height: 132px; margin-top: 10px; }}
     .volume-chart {{ height: 116px; margin-top: 10px; }}
     .login-wrap {{
@@ -662,6 +665,7 @@ def _shared_page_css() -> str:
       border: 1px solid var(--line);
       border-radius: 8px;
     }
+    .indicator-chart { height: 132px; margin-top: 10px; }
     .rsi-chart { height: 132px; margin-top: 10px; }
     .volume-chart { height: 116px; margin-top: 10px; }
     .chart-controls {
@@ -684,6 +688,10 @@ def _shared_page_css() -> str:
     .chart-wrap.hide-bollinger .bollinger-overlay,
     .chart-wrap.hide-ema .ema-overlay,
     .chart-wrap.hide-sma .sma-overlay {
+      display: none;
+    }
+    .chart-section.hide-macd .macd-wrap,
+    .chart-section.hide-atr .atr-wrap {
       display: none;
     }
     .chart-wrap {
@@ -825,11 +833,13 @@ def _render_chart_series(series: ChartSeries) -> str:
         change_percent = ((latest.close_price - first.close_price) / first.close_price) * Decimal("100")
     change_class = "positive" if change_percent >= 0 else "negative"
     return (
-        "<section class=\"panel\">"
+        "<section class=\"panel chart-section\">"
         f"<h2>{escape(series.symbol)} {escape(series.interval)}</h2>"
         f"{_render_sparkline(series.candles)}"
         f"{_render_volume_panel(series.candles)}"
         f"{_render_rsi_panel(series.candles)}"
+        f"{_render_macd_panel(series.candles)}"
+        f"{_render_atr_panel(series.candles)}"
         "<table>"
         "<thead><tr><th>Latest Time</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Window Change</th></tr></thead>"
         "<tbody><tr>"
@@ -976,6 +986,142 @@ def _render_rsi_panel(candles: tuple[ChartCandle, ...]) -> str:
         f"<polyline points=\"{rsi_points}\" fill=\"none\" stroke=\"#7c3aed\" stroke-width=\"2.5\" />"
         f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"4\" fill=\"#7c3aed\" />"
         f"<text x=\"{(width - chart_right):.2f}\" y=\"18\" font-size=\"13\" fill=\"#7c3aed\" text-anchor=\"end\">RSI 14 {_format_rsi_value(latest_rsi)}</text>"
+        "</svg>"
+        "</div>"
+    )
+
+
+def _render_macd_panel(candles: tuple[ChartCandle, ...]) -> str:
+    closes = [candle.close_price for candle in candles]
+    macd_values = calculate_macd_series(closes)
+    if not any(histogram is not None for _, _, histogram in macd_values):
+        return "<p class=\"muted macd-wrap\">Not enough candles for MACD chart.</p>"
+
+    width = Decimal("1000")
+    height = Decimal("132")
+    chart_left = Decimal("86")
+    chart_right = Decimal("24")
+    chart_top = Decimal("12")
+    chart_bottom = Decimal("24")
+    chart_width = width - chart_left - chart_right
+    chart_height = height - chart_top - chart_bottom
+    all_values = [
+        value
+        for values in macd_values
+        for value in values
+        if value is not None
+    ] + [Decimal("0")]
+    low = min(all_values)
+    high = max(all_values)
+    spread = high - low
+    if spread == 0:
+        spread = Decimal("1")
+
+    def point_for_value(index: int, value: Decimal) -> tuple[Decimal, Decimal]:
+        x = chart_left + (Decimal(index) / Decimal(len(candles) - 1)) * chart_width
+        y = chart_top + ((high - value) / spread) * chart_height
+        return x, y
+
+    zero_y = point_for_value(0, Decimal("0"))[1]
+    macd_points = _series_points(
+        tuple((index, values[0]) for index, values in enumerate(macd_values)),
+        point_for_value,
+    )
+    signal_points = _series_points(
+        tuple((index, values[1]) for index, values in enumerate(macd_values)),
+        point_for_value,
+    )
+    bar_width = max(
+        Decimal("3"),
+        min(Decimal("9"), (chart_width / Decimal(len(candles))) * Decimal("0.58")),
+    )
+    bar_half_width = bar_width / Decimal("2")
+    histogram_bars = []
+    for index, (_, _, histogram) in enumerate(macd_values):
+        if histogram is None:
+            continue
+        x, histogram_y = point_for_value(index, histogram)
+        y = min(zero_y, histogram_y)
+        bar_height = max(abs(zero_y - histogram_y), Decimal("1"))
+        color = "#087f5b" if histogram >= 0 else "#c92a2a"
+        histogram_bars.append(
+            f"<rect x=\"{(x - bar_half_width):.2f}\" y=\"{y:.2f}\" "
+            f"width=\"{bar_width:.2f}\" height=\"{bar_height:.2f}\" "
+            f"fill=\"{color}\" opacity=\"0.55\" />"
+        )
+
+    latest_macd, latest_signal, latest_histogram = next(
+        values for values in reversed(macd_values) if values[2] is not None
+    )
+    latest_text = (
+        f"MACD {_format_axis_price(latest_macd)} | "
+        f"Signal {_format_axis_price(latest_signal)} | "
+        f"Hist {_format_axis_price(latest_histogram)}"
+    )
+    return (
+        "<div class=\"macd-wrap\">"
+        "<svg class=\"sparkline indicator-chart macd-chart\" viewBox=\"0 0 1000 132\" preserveAspectRatio=\"none\" role=\"img\">"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{zero_y:.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{zero_y:.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" stroke-dasharray=\"5 5\" />"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{chart_top:.2f}\" x2=\"{chart_left:.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<text x=\"10\" y=\"{(chart_top + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">{escape(_format_axis_price(high))}</text>"
+        f"<text x=\"10\" y=\"{(zero_y + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">0</text>"
+        f"<text x=\"10\" y=\"{(chart_top + chart_height + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">{escape(_format_axis_price(low))}</text>"
+        f"{''.join(histogram_bars)}"
+        f"<polyline points=\"{macd_points}\" fill=\"none\" stroke=\"#1f6feb\" stroke-width=\"2.2\" />"
+        f"<polyline points=\"{signal_points}\" fill=\"none\" stroke=\"#f59e0b\" stroke-width=\"2.2\" />"
+        f"<text x=\"{(width - chart_right):.2f}\" y=\"18\" font-size=\"13\" fill=\"#1f6feb\" text-anchor=\"end\">{escape(latest_text)}</text>"
+        "</svg>"
+        "</div>"
+    )
+
+
+def _render_atr_panel(candles: tuple[ChartCandle, ...]) -> str:
+    highs = [candle.high_price for candle in candles]
+    lows = [candle.low_price for candle in candles]
+    closes = [candle.close_price for candle in candles]
+    atr_values = calculate_atr_series(highs=highs, lows=lows, closes=closes)
+    if not any(value is not None for value in atr_values):
+        return "<p class=\"muted atr-wrap\">Not enough candles for ATR chart.</p>"
+
+    width = Decimal("1000")
+    height = Decimal("132")
+    chart_left = Decimal("86")
+    chart_right = Decimal("24")
+    chart_top = Decimal("12")
+    chart_bottom = Decimal("24")
+    chart_width = width - chart_left - chart_right
+    chart_height = height - chart_top - chart_bottom
+    high = max(value for value in atr_values if value is not None)
+    low = Decimal("0")
+    spread = high - low
+    if spread == 0:
+        spread = Decimal("1")
+
+    def point_for_atr(index: int, value: Decimal) -> tuple[Decimal, Decimal]:
+        x = chart_left + (Decimal(index) / Decimal(len(candles) - 1)) * chart_width
+        y = chart_top + ((high - value) / spread) * chart_height
+        return x, y
+
+    atr_points = _series_points(
+        tuple((index, value) for index, value in enumerate(atr_values)),
+        point_for_atr,
+    )
+    latest_atr = next((value for value in reversed(atr_values) if value is not None), None)
+    if latest_atr is None:
+        return "<p class=\"muted atr-wrap\">Not enough candles for ATR chart.</p>"
+
+    latest_x, latest_y = point_for_atr(len(candles) - 1, latest_atr)
+    return (
+        "<div class=\"atr-wrap\">"
+        "<svg class=\"sparkline indicator-chart atr-chart\" viewBox=\"0 0 1000 132\" preserveAspectRatio=\"none\" role=\"img\">"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{chart_top:.2f}\" x2=\"{chart_left:.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<text x=\"10\" y=\"{(chart_top + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">{escape(_format_axis_price(high))}</text>"
+        f"<text x=\"10\" y=\"{(chart_top + chart_height + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">0</text>"
+        f"<polyline points=\"{atr_points}\" fill=\"none\" stroke=\"#9333ea\" stroke-width=\"2.4\" />"
+        f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"4\" fill=\"#9333ea\" />"
+        f"<text x=\"{(width - chart_right):.2f}\" y=\"18\" font-size=\"13\" fill=\"#9333ea\" text-anchor=\"end\">ATR 14 {_format_axis_price(latest_atr)}</text>"
         "</svg>"
         "</div>"
     )
@@ -1174,6 +1320,8 @@ def _render_chart_controls() -> str:
         "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"bollinger\" checked> Bollinger</label>"
         "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"ema\" checked> EMA20</label>"
         "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"sma\" checked> SMA50</label>"
+        "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"macd\" checked> MACD</label>"
+        "<label><input class=\"chart-toggle\" type=\"checkbox\" data-overlay=\"atr\" checked> ATR14</label>"
         "</div>"
     )
 
@@ -1378,6 +1526,10 @@ def _chart_interaction_script() -> str:
         for (const checkbox of controls.querySelectorAll(".chart-toggle")) {
           const apply = () => {
             wrapper.classList.toggle(`hide-${checkbox.dataset.overlay}`, !checkbox.checked);
+            const section = controls.closest(".chart-section");
+            if (section) {
+              section.classList.toggle(`hide-${checkbox.dataset.overlay}`, !checkbox.checked);
+            }
           };
           checkbox.addEventListener("change", apply);
           apply();
