@@ -6,19 +6,23 @@ import argparse
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 
-from app.candle_collector import DEFAULT_CANDLE_FETCH_LIMIT, run_candle_collection_once
+from app.candle_collector import (
+    DEFAULT_CANDLE_FETCH_LIMIT,
+    run_candle_collection_once,
+    run_candle_collection_watch,
+)
 from app.candle_store import (
     DEFAULT_CANDLE_RETENTION_DAYS,
     format_candle_store_stats,
     run_candle_db_maintenance,
 )
+from app.config import DEFAULT_COLLECTION_INTERVAL_SECONDS
 from app.dashboard import DEFAULT_DASHBOARD_HOST, DEFAULT_DASHBOARD_PORT, run_dashboard_server
 from app.monitor import run_once, run_watch
 from app.summary import DEFAULT_SUMMARY_HOURS, build_market_summary, format_market_summary
 from app.telegram_notifier import TelegramSendError, send_summary_to_telegram
 
 
-DEFAULT_WATCH_INTERVAL_SECONDS = 60
 DEFAULT_ALERT_THRESHOLD_PERCENT = Decimal("1.0")
 
 
@@ -39,9 +43,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         type=_positive_int,
-        default=DEFAULT_WATCH_INTERVAL_SECONDS,
+        default=DEFAULT_COLLECTION_INTERVAL_SECONDS,
         metavar="N",
-        help="Watch interval in seconds. Default: 60.",
+        help=f"Watch interval in seconds. Default: {DEFAULT_COLLECTION_INTERVAL_SECONDS}.",
     )
     parser.add_argument(
         "--alert-threshold",
@@ -168,9 +172,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.collect_candles:
+        if args.watch:
+            return run_candle_collection_watch(
+                interval_seconds=args.interval,
+                limit=args.candle_limit,
+                retention_days=args.retention_days,
+            )
         return run_candle_collection_once(
             limit=args.candle_limit,
             retention_days=args.retention_days,
+            interval_seconds=args.interval,
         )
 
     if args.summary:

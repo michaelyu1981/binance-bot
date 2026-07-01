@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 from app.binance_reader import BinancePublicMarketError, fetch_public_candles
 from app.candle_store import (
@@ -15,6 +16,11 @@ from app.candle_store import (
     upsert_candles,
 )
 from app.config import PUBLIC_MARKET_WATCHLIST
+from app.health import (
+    CANDLE_COLLECTOR_HEALTH_PATH,
+    write_error_heartbeat,
+    write_success_heartbeat,
+)
 
 
 DEFAULT_CANDLE_INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d")
@@ -78,6 +84,7 @@ def run_candle_collection_once(
     limit: int = DEFAULT_CANDLE_FETCH_LIMIT,
     retention_days: int = DEFAULT_CANDLE_RETENTION_DAYS,
     db_path: Path = DEFAULT_CANDLE_DB_PATH,
+    interval_seconds: int = 0,
 ) -> int:
     """Run one public candle collection cycle and print a short report."""
 
@@ -89,10 +96,63 @@ def run_candle_collection_once(
         )
     except BinancePublicMarketError as exc:
         print(f"Error: {exc}")
+        write_error_heartbeat(
+            path=CANDLE_COLLECTOR_HEALTH_PATH,
+            service="candle_collector",
+            interval_seconds=interval_seconds,
+            error_message=str(exc),
+        )
         return 1
 
     print(format_candle_collection_result(result))
+    write_success_heartbeat(
+        path=CANDLE_COLLECTOR_HEALTH_PATH,
+        service="candle_collector",
+        interval_seconds=interval_seconds,
+        details={
+            "symbols": list(result.symbols),
+            "intervals": list(result.intervals),
+            "fetch_limit": result.fetch_limit,
+            "fetched_rows": result.fetched_rows,
+            "upserted_rows": result.upserted_rows,
+            "deleted_rows": result.deleted_rows,
+            "total_rows": result.total_rows,
+        },
+    )
     return 0
+
+
+def run_candle_collection_watch(
+    *,
+    interval_seconds: int,
+    limit: int = DEFAULT_CANDLE_FETCH_LIMIT,
+    retention_days: int = DEFAULT_CANDLE_RETENTION_DAYS,
+    db_path: Path = DEFAULT_CANDLE_DB_PATH,
+) -> int:
+    """Run public candle collection repeatedly until interrupted."""
+
+    print("Starting read-only Binance public candle collector")
+    print(f"Symbols: {', '.join(PUBLIC_MARKET_WATCHLIST)}")
+    print(f"Intervals: {', '.join(DEFAULT_CANDLE_INTERVALS)}")
+    print(f"Interval seconds: {interval_seconds}")
+    print(f"Fetch limit per symbol/interval: {limit}")
+    print(f"Retention days: {retention_days}")
+    print("Safety: public candle data only; no API key, no account access, no orders.")
+
+    try:
+        while True:
+            exit_code = run_candle_collection_once(
+                limit=limit,
+                retention_days=retention_days,
+                db_path=db_path,
+                interval_seconds=interval_seconds,
+            )
+            if exit_code != 0:
+                return exit_code
+            time.sleep(interval_seconds)
+    except KeyboardInterrupt:
+        print("Stopping read-only Binance public candle collector.")
+        return 0
 
 
 def format_candle_collection_result(result: CandleCollectionResult) -> str:

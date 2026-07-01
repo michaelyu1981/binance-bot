@@ -8,6 +8,11 @@ from decimal import Decimal
 from app.alerts import build_alert_lines
 from app.binance_reader import BinancePublicMarketError, MarketPrice, fetch_public_prices
 from app.config import PUBLIC_MARKET_WATCHLIST
+from app.health import (
+    PRICE_MONITOR_HEALTH_PATH,
+    write_error_heartbeat,
+    write_success_heartbeat,
+)
 from app.logger import append_market_price_log, current_timestamp, format_market_price_lines
 from app.telegram_notifier import (
     TelegramSendError,
@@ -19,16 +24,22 @@ from app.telegram_notifier import (
 def run_once() -> int:
     """Fetch, print, and log configured public spot market prices once."""
 
-    return 0 if run_price_cycle() is not None else 1
+    return 0 if run_price_cycle(interval_seconds=0) is not None else 1
 
 
-def run_price_cycle() -> list[MarketPrice] | None:
+def run_price_cycle(*, interval_seconds: int) -> list[MarketPrice] | None:
     """Fetch, print, and log configured public spot market prices."""
 
     try:
         prices = fetch_public_prices(PUBLIC_MARKET_WATCHLIST)
     except BinancePublicMarketError as exc:
         print(f"Error: {exc}")
+        write_error_heartbeat(
+            path=PRICE_MONITOR_HEALTH_PATH,
+            service="price_monitor",
+            interval_seconds=interval_seconds,
+            error_message=str(exc),
+        )
         return None
 
     timestamp = current_timestamp()
@@ -40,6 +51,15 @@ def run_price_cycle() -> list[MarketPrice] | None:
     for line in price_lines:
         print(line)
 
+    write_success_heartbeat(
+        path=PRICE_MONITOR_HEALTH_PATH,
+        service="price_monitor",
+        interval_seconds=interval_seconds,
+        details={
+            "symbols": list(PUBLIC_MARKET_WATCHLIST),
+            "price_count": len(prices),
+        },
+    )
     return prices
 
 
@@ -54,7 +74,7 @@ def run_watch(interval_seconds: int, alert_threshold_percent: Decimal) -> int:
 
     try:
         while True:
-            prices = run_price_cycle()
+            prices = run_price_cycle(interval_seconds=interval_seconds)
             if prices is None:
                 return 1
 

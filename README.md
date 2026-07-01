@@ -70,7 +70,10 @@ Run continuously until Ctrl+C:
 python3 -m app.main --watch
 ```
 
-Run continuously with a 5-second interval:
+Default collection interval is 300 seconds, or 5 minutes. Price monitoring and
+candle collection use the same shared default interval.
+
+Run continuously with a 5-second interval for testing:
 
 ```bash
 python3 -m app.main --watch --interval 5
@@ -181,6 +184,7 @@ the timestamp as Philippine time. The log view is scrollable for easier review.
 The dashboard also shows read-only operational visibility:
 
 - monitor health based on the latest log timestamp
+- separate process health for the price monitor and candle collector
 - last update age
 - first and latest log time in the selected summary window
 - log coverage duration from first price line to latest price line
@@ -195,6 +199,17 @@ signals and do not enable trading.
 
 Log coverage is not Docker container uptime. It shows how long the dashboard can
 see continuous market data in the selected log window.
+
+Process health is reported through local heartbeat files:
+
+```text
+data/health/price_monitor.json
+data/health/candle_collector.json
+```
+
+Each long-running process updates its own heartbeat after a successful cycle or
+after an error. The dashboard shows `OK`, `STALE`, `ERROR`, or `DOWN` for each
+process.
 
 ## Public candle collection
 
@@ -228,6 +243,18 @@ Run one candle collection cycle:
 
 ```bash
 python3 -m app.main --collect-candles
+```
+
+Run candle collection continuously using the shared default interval:
+
+```bash
+python3 -m app.main --collect-candles --watch
+```
+
+Run candle collection continuously with a test interval:
+
+```bash
+python3 -m app.main --collect-candles --watch --interval 300
 ```
 
 Fetch a smaller batch for testing:
@@ -302,10 +329,12 @@ printing the Telegram token.
 ## Docker local setup
 
 The Docker setup runs the same read-only public market monitor. The default
-Compose command is a production-safe watch loop:
+Compose services run a production-safe price watch loop and candle collection
+loop:
 
 ```bash
-python3 -m app.main --watch --interval 60 --alert-threshold 0.5
+python3 -m app.main --watch --interval 300 --alert-threshold 0.5
+python3 -m app.main --collect-candles --watch --interval 300 --candle-limit 100 --retention-days 90
 ```
 
 It does not add Binance account access, buy/sell logic, order endpoints,
@@ -353,6 +382,11 @@ Start the production-style watch service:
 docker compose up -d
 ```
 
+This starts:
+
+- `binance-bot` for public price monitoring
+- `binance-candles` for public candle collection
+
 Start the private dashboard service locally:
 
 ```bash
@@ -367,6 +401,7 @@ Follow logs:
 
 ```bash
 docker compose logs -f binance-bot
+docker compose logs -f binance-candles
 ```
 
 Stop the service:

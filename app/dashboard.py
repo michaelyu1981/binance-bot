@@ -11,6 +11,12 @@ import re
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
+from app.health import (
+    CANDLE_COLLECTOR_HEALTH_PATH,
+    PRICE_MONITOR_HEALTH_PATH,
+    ServiceHealth,
+    read_service_health,
+)
 from app.summary import (
     DEFAULT_SUMMARY_HOURS,
     AlertLogEntry,
@@ -23,7 +29,7 @@ from app.summary import (
 DEFAULT_DASHBOARD_HOST = "127.0.0.1"
 DEFAULT_DASHBOARD_PORT = 8765
 RECENT_LOG_LINE_LIMIT = 300
-EXPECTED_WATCH_INTERVAL_SECONDS = 60
+EXPECTED_WATCH_INTERVAL_SECONDS = 300
 STALE_AFTER_SECONDS = EXPECTED_WATCH_INTERVAL_SECONDS * 3
 ALERT_SYMBOL_RE = re.compile(r"\s+ALERT\s+(?P<symbol>[A-Z0-9]+):")
 ALERT_CHANGE_RE = re.compile(r":\s+(?P<change>[+-]?[0-9]+(?:\.[0-9]+)?)%")
@@ -125,6 +131,14 @@ def render_dashboard(summary: MarketSummary) -> str:
     alert_stats = _alert_stats(summary, report_datetime)
     trend_rows = _trend_rows(summary, report_datetime)
     log_coverage = _log_coverage(summary)
+    price_monitor_health = read_service_health(
+        PRICE_MONITOR_HEALTH_PATH,
+        service="price_monitor",
+    )
+    candle_collector_health = read_service_health(
+        CANDLE_COLLECTOR_HEALTH_PATH,
+        service="candle_collector",
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -248,6 +262,12 @@ def render_dashboard(summary: MarketSummary) -> str:
       {_metric_card("Timezone", "Philippine time UTC+8")}
     </section>
     <section class="grid">
+      {_service_health_card("Price Monitor", price_monitor_health)}
+      {_metric_card("Price Last Success", price_monitor_health.last_success or "None")}
+      {_service_health_card("Candle Collector", candle_collector_health)}
+      {_metric_card("Candle Last Success", candle_collector_health.last_success or "None")}
+    </section>
+    <section class="grid">
       {_metric_card("First Log Time", log_coverage.first_time)}
       {_metric_card("Latest Log Time", log_coverage.latest_time)}
       {_metric_card("Log Coverage", log_coverage.duration)}
@@ -366,6 +386,22 @@ def _metric_card(label: str, value: str) -> str:
         "<section class=\"panel\">"
         f"<div class=\"muted\">{escape(label)}</div>"
         f"<div class=\"{metric_class}\">{escape(value)}</div>"
+        "</section>"
+    )
+
+
+def _service_health_card(label: str, health: ServiceHealth) -> str:
+    health_class = _health_class(health.health)
+    lines = [
+        health.health,
+        f"age: {_format_service_age(health.age_seconds)}",
+    ]
+    if health.last_error_message:
+        lines.append(f"error: {health.last_error_message}")
+    return (
+        "<section class=\"panel\">"
+        f"<div class=\"muted\">{escape(label)}</div>"
+        f"<div class=\"metric compact {health_class}\">{escape(' | '.join(lines))}</div>"
         "</section>"
     )
 
@@ -573,6 +609,20 @@ def _format_duration(seconds: int) -> str:
     hours = minutes // 60
     remaining_minutes = minutes % 60
     return f"{hours}h {remaining_minutes}m"
+
+
+def _format_service_age(seconds: int | None) -> str:
+    if seconds is None:
+        return "unknown"
+    return _format_duration(seconds)
+
+
+def _health_class(health: str) -> str:
+    if health == "OK":
+        return "status-good"
+    if health in ("STALE", "UNKNOWN"):
+        return "status-warn"
+    return "status-bad"
 
 
 def _parse_datetime(value: str) -> datetime | None:

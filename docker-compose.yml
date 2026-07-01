@@ -9,6 +9,7 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     volumes:
       - ./logs:/app/logs
+      - ./data:/app/data
     command:
       [
         "python3",
@@ -16,9 +17,31 @@ services:
         "app.main",
         "--watch",
         "--interval",
-        "60",
+        "300",
         "--alert-threshold",
         "0.5",
+      ]
+
+  binance-candles:
+    build:
+      context: .
+    image: binance-bot:local
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    command:
+      [
+        "python3",
+        "-m",
+        "app.main",
+        "--collect-candles",
+        "--watch",
+        "--interval",
+        "300",
+        "--candle-limit",
+        "100",
+        "--retention-days",
+        "90",
       ]
 
   binance-dashboard:
@@ -30,6 +53,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./logs:/app/logs:ro
+      - ./data:/app/data:ro
     ports:
       - "127.0.0.1:8765:8765"
     command:
