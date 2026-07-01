@@ -374,7 +374,7 @@ def render_dashboard(summary: MarketSummary) -> str:
     }}
     .sparkline {{
       width: 100%;
-      height: 180px;
+      height: 260px;
       display: block;
       background: #fbfcfe;
       border: 1px solid var(--line);
@@ -633,7 +633,7 @@ def _shared_page_css() -> str:
     .chart-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
     .sparkline {
       width: 100%;
-      height: 180px;
+      height: 260px;
       display: block;
       background: #fbfcfe;
       border: 1px solid var(--line);
@@ -785,29 +785,89 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         return "<p class=\"muted\">Not enough candles for chart.</p>"
 
     width = Decimal("1000")
-    height = Decimal("180")
-    padding = Decimal("14")
+    height = Decimal("260")
+    chart_left = Decimal("86")
+    chart_right = Decimal("24")
+    chart_top = Decimal("18")
+    chart_bottom = Decimal("44")
+    chart_width = width - chart_left - chart_right
+    chart_height = height - chart_top - chart_bottom
     closes = [candle.close_price for candle in candles]
     low = min(closes)
     high = max(closes)
     spread = high - low
     if spread == 0:
         spread = Decimal("1")
+
     points = []
     for index, close in enumerate(closes):
-        x = (Decimal(index) / Decimal(len(closes) - 1)) * width
-        y = padding + ((high - close) / spread) * (height - (padding * 2))
+        x = chart_left + (Decimal(index) / Decimal(len(closes) - 1)) * chart_width
+        y = chart_top + ((high - close) / spread) * chart_height
         points.append(f"{x:.2f},{y:.2f}")
+
+    middle = (high + low) / Decimal("2")
+    price_ticks = (
+        (high, chart_top),
+        (middle, chart_top + (chart_height / Decimal("2"))),
+        (low, chart_top + chart_height),
+    )
+    price_grid = "".join(
+        (
+            f"<line x1=\"{chart_left:.2f}\" y1=\"{y:.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{y:.2f}\" "
+            "stroke=\"#d9e0ea\" stroke-width=\"1\" />"
+            f"<text x=\"10\" y=\"{(y + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">"
+            f"{escape(_format_axis_price(price))}</text>"
+        )
+        for price, y in price_ticks
+    )
+
+    first_time = _format_axis_time(candles[0].open_time_ms)
+    middle_time = _format_axis_time(candles[len(candles) // 2].open_time_ms)
+    latest_time = _format_axis_time(candles[-1].open_time_ms)
+    x_ticks = (
+        (chart_left, first_time, "start"),
+        (chart_left + (chart_width / Decimal("2")), middle_time, "middle"),
+        (width - chart_right, latest_time, "end"),
+    )
+    time_labels = "".join(
+        (
+            f"<text x=\"{x:.2f}\" y=\"238\" font-size=\"13\" fill=\"#647084\" "
+            f"text-anchor=\"{anchor}\">{escape(label)}</text>"
+        )
+        for x, label, anchor in x_ticks
+    )
+
+    latest_close = closes[-1]
+    latest_x = width - chart_right
+    latest_y = chart_top + ((high - latest_close) / spread) * chart_height
     return (
-        "<svg class=\"sparkline\" viewBox=\"0 0 1000 180\" preserveAspectRatio=\"none\" role=\"img\">"
-        "<line x1=\"0\" y1=\"90\" x2=\"1000\" y2=\"90\" stroke=\"#d9e0ea\" stroke-width=\"1\" />"
+        "<svg class=\"sparkline\" viewBox=\"0 0 1000 260\" preserveAspectRatio=\"none\" role=\"img\">"
+        f"{price_grid}"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{chart_top:.2f}\" x2=\"{chart_left:.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
         f"<polyline points=\"{' '.join(points)}\" fill=\"none\" stroke=\"#1f6feb\" stroke-width=\"3\" />"
+        f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"5\" fill=\"#1f6feb\" />"
+        f"<text x=\"{(latest_x - Decimal('8')):.2f}\" y=\"{(latest_y - Decimal('10')):.2f}\" font-size=\"13\" fill=\"#1f6feb\" text-anchor=\"end\">"
+        f"{escape(_format_axis_price(latest_close))}</text>"
+        f"{time_labels}"
         "</svg>"
     )
 
 
 def _format_candle_time(open_time_ms: int) -> str:
     return datetime.fromtimestamp(open_time_ms / 1000, tz=PHILIPPINE_TIMEZONE).isoformat()
+
+
+def _format_axis_time(open_time_ms: int) -> str:
+    return datetime.fromtimestamp(open_time_ms / 1000, tz=PHILIPPINE_TIMEZONE).strftime("%m-%d %H:%M")
+
+
+def _format_axis_price(price: Decimal) -> str:
+    if price >= Decimal("100"):
+        return f"{price:.2f}"
+    if price >= Decimal("1"):
+        return f"{price:.4f}"
+    return f"{price:.6f}"
 
 
 def _is_auth_required() -> bool:
