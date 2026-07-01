@@ -867,6 +867,16 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
     chart_width = width - chart_left - chart_right
     chart_height = height - chart_top - chart_bottom
     closes = [candle.close_price for candle in candles]
+    candle_prices = [
+        price
+        for candle in candles
+        for price in (
+            candle.open_price,
+            candle.high_price,
+            candle.low_price,
+            candle.close_price,
+        )
+    ]
     bollinger_bands = calculate_bollinger_band_series(closes)
     bollinger_values = [
         value
@@ -874,8 +884,8 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         for value in bands
         if value is not None
     ]
-    low = min(closes + bollinger_values)
-    high = max(closes + bollinger_values)
+    low = min(candle_prices + bollinger_values)
+    high = max(candle_prices + bollinger_values)
     spread = high - low
     if spread == 0:
         spread = Decimal("1")
@@ -885,17 +895,38 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         y = chart_top + ((high - value) / spread) * chart_height
         return x, y
 
-    points = []
+    candle_width = max(
+        Decimal("3"),
+        min(Decimal("9"), (chart_width / Decimal(len(candles))) * Decimal("0.58")),
+    )
+    candle_half_width = candle_width / Decimal("2")
+    candle_elements = []
     point_metadata = []
-    for index, close in enumerate(closes):
-        x, y = point_for_value(index, close)
-        points.append(f"{x:.2f},{y:.2f}")
+    for index, candle in enumerate(candles):
+        x, close_y = point_for_value(index, candle.close_price)
+        _, open_y = point_for_value(index, candle.open_price)
+        _, high_y = point_for_value(index, candle.high_price)
+        _, low_y = point_for_value(index, candle.low_price)
+        color = "#087f5b" if candle.close_price >= candle.open_price else "#c92a2a"
+        body_y = min(open_y, close_y)
+        body_height = max(abs(close_y - open_y), Decimal("1.5"))
+        candle_elements.append(
+            f"<line x1=\"{x:.2f}\" y1=\"{high_y:.2f}\" x2=\"{x:.2f}\" y2=\"{low_y:.2f}\" "
+            f"stroke=\"{color}\" stroke-width=\"1.4\" />"
+            f"<rect x=\"{(x - candle_half_width):.2f}\" y=\"{body_y:.2f}\" "
+            f"width=\"{candle_width:.2f}\" height=\"{body_height:.2f}\" "
+            f"fill=\"{color}\" opacity=\"0.82\" />"
+        )
         point_metadata.append(
             {
                 "x": float(x),
-                "y": float(y),
-                "time": _format_candle_time(candles[index].open_time_ms),
-                "close": _format_axis_price(close),
+                "y": float(close_y),
+                "time": _format_candle_time(candle.open_time_ms),
+                "open": _format_axis_price(candle.open_price),
+                "high": _format_axis_price(candle.high_price),
+                "low": _format_axis_price(candle.low_price),
+                "close": _format_axis_price(candle.close_price),
+                "volume": str(candle.volume),
             }
         )
 
@@ -953,10 +984,12 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
     )
     legend = (
         "<g>"
-        "<line x1=\"718\" y1=\"20\" x2=\"756\" y2=\"20\" stroke=\"#1f6feb\" stroke-width=\"3\" />"
-        "<text x=\"764\" y=\"24\" font-size=\"13\" fill=\"#647084\">Close</text>"
-        "<line x1=\"818\" y1=\"20\" x2=\"856\" y2=\"20\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" />"
-        "<text x=\"864\" y=\"24\" font-size=\"13\" fill=\"#647084\">Bollinger</text>"
+        "<rect x=\"686\" y=\"14\" width=\"11\" height=\"11\" fill=\"#087f5b\" opacity=\"0.82\" />"
+        "<text x=\"704\" y=\"24\" font-size=\"13\" fill=\"#647084\">Green close up</text>"
+        "<rect x=\"812\" y=\"14\" width=\"11\" height=\"11\" fill=\"#c92a2a\" opacity=\"0.82\" />"
+        "<text x=\"830\" y=\"24\" font-size=\"13\" fill=\"#647084\">Red close down</text>"
+        "<line x1=\"686\" y1=\"38\" x2=\"724\" y2=\"38\" stroke=\"#c2410c\" stroke-width=\"2\" stroke-dasharray=\"7 5\" />"
+        "<text x=\"732\" y=\"42\" font-size=\"13\" fill=\"#647084\">Bollinger</text>"
         "</g>"
     )
 
@@ -971,7 +1004,7 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
         f"<line class=\"hover-guide\" x1=\"0\" y1=\"{chart_top:.2f}\" x2=\"0\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#087f5b\" stroke-width=\"1\" opacity=\"0\" />"
         f"{bollinger_overlay}"
-        f"<polyline points=\"{' '.join(points)}\" fill=\"none\" stroke=\"#1f6feb\" stroke-width=\"3\" />"
+        f"{''.join(candle_elements)}"
         f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"5\" fill=\"#1f6feb\" />"
         "<circle class=\"hover-marker\" cx=\"0\" cy=\"0\" r=\"6\" fill=\"#087f5b\" stroke=\"#ffffff\" stroke-width=\"2\" opacity=\"0\" />"
         f"<text x=\"{(latest_x - Decimal('8')):.2f}\" y=\"{(latest_y - Decimal('10')):.2f}\" font-size=\"13\" fill=\"#1f6feb\" text-anchor=\"end\">"
@@ -1099,7 +1132,12 @@ def _chart_interaction_script() -> str:
         marker.setAttribute("cx", point.x);
         marker.setAttribute("cy", point.y);
         marker.setAttribute("opacity", "1");
-        tooltip.innerHTML = `<strong>${point.close}</strong><br>${point.time}`;
+        tooltip.innerHTML = `
+          <strong>Close ${point.close}</strong><br>
+          Open ${point.open} | High ${point.high}<br>
+          Low ${point.low} | Volume ${point.volume}<br>
+          ${point.time}
+        `;
         tooltip.style.display = "block";
 
         const wrapperRect = wrapper.getBoundingClientRect();
