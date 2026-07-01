@@ -10,6 +10,7 @@ import hashlib
 import hmac
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import os
 import re
 import sqlite3
@@ -524,6 +525,7 @@ def render_chart_view(*, interval: str) -> str:
       {chart_sections}
     </section>
   </main>
+  <script>{_chart_interaction_script()}</script>
 </body>
 </html>
 """
@@ -638,6 +640,22 @@ def _shared_page_css() -> str:
       background: #fbfcfe;
       border: 1px solid var(--line);
       border-radius: 8px;
+    }
+    .chart-wrap {
+      position: relative;
+    }
+    .chart-tooltip {
+      position: absolute;
+      display: none;
+      min-width: 150px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      box-shadow: 0 8px 20px rgba(28, 36, 48, 0.12);
+      pointer-events: none;
+      z-index: 3;
     }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: right; }
@@ -800,10 +818,19 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
         spread = Decimal("1")
 
     points = []
+    point_metadata = []
     for index, close in enumerate(closes):
         x = chart_left + (Decimal(index) / Decimal(len(closes) - 1)) * chart_width
         y = chart_top + ((high - close) / spread) * chart_height
         points.append(f"{x:.2f},{y:.2f}")
+        point_metadata.append(
+            {
+                "x": float(x),
+                "y": float(y),
+                "time": _format_candle_time(candles[index].open_time_ms),
+                "close": _format_axis_price(close),
+            }
+        )
 
     price_ticks = tuple(
         (
@@ -842,16 +869,22 @@ def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
     latest_x = width - chart_right
     latest_y = chart_top + ((high - latest_close) / spread) * chart_height
     return (
+        "<div class=\"chart-wrap\" "
+        f"data-points=\"{escape(json.dumps(point_metadata, separators=(',', ':')))}\">"
         "<svg class=\"sparkline\" viewBox=\"0 0 1000 260\" preserveAspectRatio=\"none\" role=\"img\">"
         f"{price_grid}"
         f"<line x1=\"{chart_left:.2f}\" y1=\"{chart_top:.2f}\" x2=\"{chart_left:.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
         f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<line class=\"hover-guide\" x1=\"0\" y1=\"{chart_top:.2f}\" x2=\"0\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#087f5b\" stroke-width=\"1\" opacity=\"0\" />"
         f"<polyline points=\"{' '.join(points)}\" fill=\"none\" stroke=\"#1f6feb\" stroke-width=\"3\" />"
         f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"5\" fill=\"#1f6feb\" />"
+        "<circle class=\"hover-marker\" cx=\"0\" cy=\"0\" r=\"6\" fill=\"#087f5b\" stroke=\"#ffffff\" stroke-width=\"2\" opacity=\"0\" />"
         f"<text x=\"{(latest_x - Decimal('8')):.2f}\" y=\"{(latest_y - Decimal('10')):.2f}\" font-size=\"13\" fill=\"#1f6feb\" text-anchor=\"end\">"
         f"{escape(_format_axis_price(latest_close))}</text>"
         f"{time_labels}"
         "</svg>"
+        "<div class=\"chart-tooltip\"></div>"
+        "</div>"
     )
 
 
@@ -877,6 +910,85 @@ def _axis_label_anchor(index: int) -> str:
     if index == 6:
         return "end"
     return "middle"
+
+
+def _chart_interaction_script() -> str:
+    return r"""
+    (() => {
+      const viewBoxWidth = 1000;
+
+      function nearestPoint(points, x) {
+        let selected = points[0];
+        let selectedDistance = Math.abs(points[0].x - x);
+        for (const point of points) {
+          const distance = Math.abs(point.x - x);
+          if (distance < selectedDistance) {
+            selected = point;
+            selectedDistance = distance;
+          }
+        }
+        return selected;
+      }
+
+      function showPoint(wrapper, point, clientX, clientY) {
+        const guide = wrapper.querySelector(".hover-guide");
+        const marker = wrapper.querySelector(".hover-marker");
+        const tooltip = wrapper.querySelector(".chart-tooltip");
+        if (!guide || !marker || !tooltip) return;
+
+        guide.setAttribute("x1", point.x);
+        guide.setAttribute("x2", point.x);
+        guide.setAttribute("opacity", "0.85");
+        marker.setAttribute("cx", point.x);
+        marker.setAttribute("cy", point.y);
+        marker.setAttribute("opacity", "1");
+        tooltip.innerHTML = `<strong>${point.close}</strong><br>${point.time}`;
+        tooltip.style.display = "block";
+
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const tooltipLeft = Math.min(
+          Math.max(clientX - wrapperRect.left + 14, 8),
+          Math.max(8, wrapperRect.width - tooltip.offsetWidth - 8)
+        );
+        const tooltipTop = Math.min(
+          Math.max(clientY - wrapperRect.top - tooltip.offsetHeight - 10, 8),
+          Math.max(8, wrapperRect.height - tooltip.offsetHeight - 8)
+        );
+        tooltip.style.left = `${tooltipLeft}px`;
+        tooltip.style.top = `${tooltipTop}px`;
+      }
+
+      function hidePoint(wrapper) {
+        const guide = wrapper.querySelector(".hover-guide");
+        const marker = wrapper.querySelector(".hover-marker");
+        const tooltip = wrapper.querySelector(".chart-tooltip");
+        if (guide) guide.setAttribute("opacity", "0");
+        if (marker) marker.setAttribute("opacity", "0");
+        if (tooltip) tooltip.style.display = "none";
+      }
+
+      for (const wrapper of document.querySelectorAll(".chart-wrap")) {
+        const points = JSON.parse(wrapper.dataset.points || "[]");
+        const svg = wrapper.querySelector("svg");
+        if (!points.length || !svg) continue;
+
+        const update = (event) => {
+          const rect = svg.getBoundingClientRect();
+          const x = ((event.clientX - rect.left) / rect.width) * viewBoxWidth;
+          showPoint(wrapper, nearestPoint(points, x), event.clientX, event.clientY);
+        };
+
+        svg.addEventListener("mousemove", update);
+        svg.addEventListener("mouseleave", () => hidePoint(wrapper));
+        svg.addEventListener("touchstart", (event) => {
+          if (event.touches.length) update(event.touches[0]);
+        }, { passive: true });
+        svg.addEventListener("touchmove", (event) => {
+          if (event.touches.length) update(event.touches[0]);
+        }, { passive: true });
+      }
+    })();
+    """
 
 
 def _is_auth_required() -> bool:
