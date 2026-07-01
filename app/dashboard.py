@@ -394,6 +394,7 @@ def render_dashboard(summary: MarketSummary) -> str:
       border-radius: 8px;
     }}
     .rsi-chart {{ height: 132px; margin-top: 10px; }}
+    .volume-chart {{ height: 116px; margin-top: 10px; }}
     .login-wrap {{
       min-height: 100vh;
       display: grid;
@@ -660,6 +661,7 @@ def _shared_page_css() -> str:
       border-radius: 8px;
     }
     .rsi-chart { height: 132px; margin-top: 10px; }
+    .volume-chart { height: 116px; margin-top: 10px; }
     .chart-wrap {
       position: relative;
     }
@@ -802,6 +804,7 @@ def _render_chart_series(series: ChartSeries) -> str:
         "<section class=\"panel\">"
         f"<h2>{escape(series.symbol)} {escape(series.interval)}</h2>"
         f"{_render_sparkline(series.candles)}"
+        f"{_render_volume_panel(series.candles)}"
         f"{_render_rsi_panel(series.candles)}"
         "<table>"
         "<thead><tr><th>Latest Time</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Window Change</th></tr></thead>"
@@ -855,6 +858,55 @@ def _render_indicator_table(series_list: tuple[ChartSeries, ...]) -> str:
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
+    )
+
+
+def _render_volume_panel(candles: tuple[ChartCandle, ...]) -> str:
+    if not candles:
+        return "<p class=\"muted\">No volume data found.</p>"
+
+    width = Decimal("1000")
+    height = Decimal("116")
+    chart_left = Decimal("86")
+    chart_right = Decimal("24")
+    chart_top = Decimal("12")
+    chart_bottom = Decimal("24")
+    chart_width = width - chart_left - chart_right
+    chart_height = height - chart_top - chart_bottom
+    max_volume = max((candle.volume for candle in candles), default=Decimal("0"))
+    bar_width = max(
+        Decimal("3"),
+        min(Decimal("9"), (chart_width / Decimal(len(candles))) * Decimal("0.58")),
+    )
+    bar_half_width = bar_width / Decimal("2")
+    baseline_y = chart_top + chart_height
+
+    bars = []
+    for index, candle in enumerate(candles):
+        x = chart_left if len(candles) == 1 else chart_left + (Decimal(index) / Decimal(len(candles) - 1)) * chart_width
+        color = "#087f5b" if candle.close_price >= candle.open_price else "#c92a2a"
+        if max_volume == 0 or candle.volume == 0:
+            bar_height = Decimal("1")
+        else:
+            bar_height = max((candle.volume / max_volume) * chart_height, Decimal("1"))
+        y = baseline_y - bar_height
+        bars.append(
+            f"<rect x=\"{(x - bar_half_width):.2f}\" y=\"{y:.2f}\" "
+            f"width=\"{bar_width:.2f}\" height=\"{bar_height:.2f}\" "
+            f"fill=\"{color}\" opacity=\"0.75\" />"
+        )
+
+    latest_volume = candles[-1].volume
+    return (
+        "<div class=\"volume-wrap\">"
+        "<svg class=\"sparkline volume-chart\" viewBox=\"0 0 1000 116\" preserveAspectRatio=\"none\" role=\"img\">"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{baseline_y:.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{baseline_y:.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<text x=\"10\" y=\"{(chart_top + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">Vol {_format_volume_axis(max_volume)}</text>"
+        f"<text x=\"10\" y=\"{(baseline_y + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">0</text>"
+        f"{''.join(bars)}"
+        f"<text x=\"{(width - chart_right):.2f}\" y=\"18\" font-size=\"13\" fill=\"#647084\" text-anchor=\"end\">Volume {_format_volume_axis(latest_volume)}</text>"
+        "</svg>"
+        "</div>"
     )
 
 
@@ -1121,6 +1173,14 @@ def _format_indicator_value(value: Decimal | None) -> str:
 
 def _format_rsi_value(value: Decimal) -> str:
     return f"{value:.1f}"
+
+
+def _format_volume_axis(value: Decimal) -> str:
+    if value >= Decimal("1000000"):
+        return f"{(value / Decimal('1000000')):.2f}M"
+    if value >= Decimal("1000"):
+        return f"{(value / Decimal('1000')):.2f}K"
+    return f"{value:.2f}"
 
 
 def _format_bollinger_value(snapshot: IndicatorSnapshot) -> str:
