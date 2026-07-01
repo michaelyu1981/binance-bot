@@ -189,8 +189,19 @@ Chart View reads local SQLite candles from:
 data/market_data.sqlite3
 ```
 
-It renders read-only close-price sparklines and latest OHLC rows by symbol and
-interval. These charts are not buy/sell signals and do not enable trading.
+It renders read-only close-price sparklines, latest OHLC rows, and local
+technical indicators by symbol and interval:
+
+- RSI 14
+- Bollinger Bands 20/2
+- EMA 20
+- SMA 50
+- MACD 12/26/9
+- Volume
+- ATR 14
+
+These charts and indicators are advisory only. They are not buy/sell signals and
+do not enable trading.
 
 Dashboard login is optional and controlled only through environment variables:
 
@@ -221,6 +232,12 @@ The dashboard also shows read-only operational visibility:
 
 These values are calculated from local log files only. They are not buy/sell
 signals and do not enable trading.
+
+Trade-rule notes for future human review are stored in:
+
+```text
+docs/trade-rules.md
+```
 
 Log coverage is not Docker container uptime. It shows how long the dashboard can
 see continuous market data in the selected log window.

@@ -33,6 +33,16 @@ from app.summary import (
     PriceLogEntry,
     build_market_summary,
 )
+from app.indicators import (
+    IndicatorSnapshot,
+    build_indicator_snapshot,
+    describe_average_position,
+    describe_atr,
+    describe_bollinger,
+    describe_macd,
+    describe_rsi,
+    describe_volume,
+)
 
 
 DEFAULT_DASHBOARD_HOST = "127.0.0.1"
@@ -521,6 +531,11 @@ def render_chart_view(*, interval: str) -> str:
       <h2>Interval</h2>
       <div class="nav">{options}</div>
     </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Technical Indicators</h2>
+      <p class="muted">Advisory only. Calculated from local public candles; no API key, no account access, no orders.</p>
+      {_render_indicator_table(series_list)}
+    </section>
     <section class="chart-grid">
       {chart_sections}
     </section>
@@ -798,6 +813,46 @@ def _render_chart_series(series: ChartSeries) -> str:
     )
 
 
+def _render_indicator_table(series_list: tuple[ChartSeries, ...]) -> str:
+    rows = []
+    for series in series_list:
+        if not series.candles:
+            continue
+        latest_close = series.candles[-1].close_price
+        snapshot = build_indicator_snapshot(
+            highs=tuple(candle.high_price for candle in series.candles),
+            lows=tuple(candle.low_price for candle in series.candles),
+            closes=tuple(candle.close_price for candle in series.candles),
+            volumes=tuple(candle.volume for candle in series.candles),
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{escape(series.symbol)}</td>"
+            f"<td>{escape(_format_axis_price(latest_close))}</td>"
+            f"<td>{escape(_format_indicator_value(snapshot.rsi))}<br><span class=\"muted\">{escape(describe_rsi(snapshot.rsi))}</span></td>"
+            f"<td>{escape(_format_bollinger_value(snapshot))}<br><span class=\"muted\">{escape(describe_bollinger(snapshot.bollinger_percent_b))}</span></td>"
+            f"<td>{escape(_format_indicator_value(snapshot.ema))}<br><span class=\"muted\">{escape(describe_average_position(latest_close, snapshot.ema))}</span></td>"
+            f"<td>{escape(_format_indicator_value(snapshot.sma))}<br><span class=\"muted\">{escape(describe_average_position(latest_close, snapshot.sma))}</span></td>"
+            f"<td>{escape(_format_macd_value(snapshot))}<br><span class=\"muted\">{escape(describe_macd(snapshot.macd, snapshot.macd_signal))}</span></td>"
+            f"<td>{escape(_format_volume_value(snapshot))}<br><span class=\"muted\">{escape(describe_volume(snapshot.volume_ratio))}</span></td>"
+            f"<td>{escape(_format_atr_value(snapshot))}<br><span class=\"muted\">{escape(describe_atr(snapshot.atr_percent))}</span></td>"
+            "</tr>"
+        )
+
+    if not rows:
+        return "<p class=\"muted\">No candle data found yet. Run the public candle collector first.</p>"
+
+    return (
+        "<table>"
+        "<thead><tr>"
+        "<th>Symbol</th><th>Close</th><th>RSI 14</th><th>Bollinger 20/2</th>"
+        "<th>EMA 20</th><th>SMA 50</th><th>MACD 12/26/9</th><th>Volume</th><th>ATR 14</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+
+
 def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
     if len(candles) < 2:
         return "<p class=\"muted\">Not enough candles for chart.</p>"
@@ -902,6 +957,54 @@ def _format_axis_price(price: Decimal) -> str:
     if price >= Decimal("1"):
         return f"{price:.4f}"
     return f"{price:.6f}"
+
+
+def _format_indicator_value(value: Decimal | None) -> str:
+    if value is None:
+        return "Not enough data"
+    return _format_axis_price(value)
+
+
+def _format_bollinger_value(snapshot: IndicatorSnapshot) -> str:
+    if (
+        snapshot.bollinger_lower is None
+        or snapshot.bollinger_middle is None
+        or snapshot.bollinger_upper is None
+        or snapshot.bollinger_percent_b is None
+    ):
+        return "Not enough data"
+    return (
+        f"%B {snapshot.bollinger_percent_b:.1f} | "
+        f"L {_format_axis_price(snapshot.bollinger_lower)} | "
+        f"M {_format_axis_price(snapshot.bollinger_middle)} | "
+        f"U {_format_axis_price(snapshot.bollinger_upper)}"
+    )
+
+
+def _format_macd_value(snapshot: IndicatorSnapshot) -> str:
+    if snapshot.macd is None or snapshot.macd_signal is None or snapshot.macd_histogram is None:
+        return "Not enough data"
+    return (
+        f"M {_format_axis_price(snapshot.macd)} | "
+        f"S {_format_axis_price(snapshot.macd_signal)} | "
+        f"H {_format_axis_price(snapshot.macd_histogram)}"
+    )
+
+
+def _format_volume_value(snapshot: IndicatorSnapshot) -> str:
+    if snapshot.volume is None or snapshot.average_volume is None or snapshot.volume_ratio is None:
+        return "Not enough data"
+    return (
+        f"Now {snapshot.volume:.4f} | "
+        f"Avg {snapshot.average_volume:.4f} | "
+        f"{snapshot.volume_ratio:.0f}%"
+    )
+
+
+def _format_atr_value(snapshot: IndicatorSnapshot) -> str:
+    if snapshot.atr is None or snapshot.atr_percent is None:
+        return "Not enough data"
+    return f"{_format_axis_price(snapshot.atr)} | {snapshot.atr_percent:.2f}%"
 
 
 def _axis_label_anchor(index: int) -> str:
