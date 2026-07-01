@@ -67,3 +67,6 @@ trading, bypass safety gates, place orders, or contain secrets.
 - **Ed Seykota Agent** (`docs/bots/bot_ed_seykota.md`): Long-term mathematical trend follower.
 - **William O'Neil Agent** (`docs/bots/bot_william_oneil.md`): Parabolic breakout and volume specialist.
 - **Mark Minervini Agent** (`docs/bots/bot_mark_minervini.md`): High-velocity swing trade and risk manager.
+- **Stanley Druckenmiller Agent** (`docs/bots/bot_stanley_druckenmiller.md`): Macro liquidity, regime, and asymmetric risk analyst.
+- **Linda Raschke Agent** (`docs/bots/bot_linda_raschke.md`): Short-term swing, pattern, and market-structure tactician.
+- **Jim Simons Agent** (`docs/bots/bot_jim_simons.md`): Quantitative signal, statistics, and model-risk analyst.

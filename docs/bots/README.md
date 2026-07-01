@@ -6,6 +6,9 @@ Examples:
 
 - `bot_michael_burry.md`
 - `bot_ed_seykota.md`
+- `bot_stanley_druckenmiller.md`
+- `bot_linda_raschke.md`
+- `bot_jim_simons.md`
 
 Rules:
 
