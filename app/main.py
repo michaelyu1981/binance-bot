@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 
+from app.dashboard import DEFAULT_DASHBOARD_HOST, DEFAULT_DASHBOARD_PORT, run_dashboard_server
 from app.monitor import run_once, run_watch
 from app.summary import DEFAULT_SUMMARY_HOURS, build_market_summary, format_market_summary
 from app.telegram_notifier import TelegramSendError, send_summary_to_telegram
@@ -60,6 +61,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Send summary mode output to Telegram when Telegram env vars are configured.",
     )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Run a local read-only dashboard from market price logs.",
+    )
+    parser.add_argument(
+        "--dashboard-host",
+        default=DEFAULT_DASHBOARD_HOST,
+        metavar="HOST",
+        help="Dashboard bind host. Default: 127.0.0.1.",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=_positive_int,
+        default=DEFAULT_DASHBOARD_PORT,
+        metavar="PORT",
+        help="Dashboard port. Default: 8765.",
+    )
     return parser.parse_args(argv)
 
 
@@ -97,6 +116,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the read-only public market monitor."""
 
     args = parse_args(argv)
+    if args.dashboard:
+        run_dashboard_server(host=args.dashboard_host, port=args.dashboard_port)
+        return 0
+
     if args.summary:
         return run_summary(args.summary_hours, send_telegram=args.send_telegram)
 

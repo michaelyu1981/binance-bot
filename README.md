@@ -101,6 +101,18 @@ Send the summary to Telegram when Telegram env vars are configured:
 python3 -m app.main --summary --send-telegram
 ```
 
+Run a local read-only dashboard:
+
+```bash
+python3 -m app.main --dashboard
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765
+```
+
 Every run prints timestamped public prices in Philippine time, UTC+8, and
 appends the same lines to a daily log file:
 
@@ -143,6 +155,28 @@ The summary includes:
 The default summary period is the last 24 hours. Missing, empty, or unparseable
 logs are handled with a local message instead of an exception traceback.
 Legacy `logs/market_prices.log` is still read as a fallback if it exists.
+
+## Local dashboard
+
+Dashboard mode reads local market price logs and renders a simple browser view.
+It does not fetch Binance data by itself, does not use Binance account access,
+and does not include trading controls.
+
+```bash
+python3 -m app.main --dashboard
+```
+
+Optional bind settings:
+
+```bash
+python3 -m app.main --dashboard --dashboard-host 127.0.0.1 --dashboard-port 8765
+```
+
+Keep the dashboard bound to `127.0.0.1` unless an authentication and firewall
+plan is added later.
+
+The Recent Log Lines section groups each watch cycle by timestamp and labels
+the timestamp as Philippine time. The log view is scrollable for easier review.
 
 ## Optional Telegram alerts
 
@@ -215,6 +249,16 @@ Start the production-style watch service:
 docker compose up -d
 ```
 
+Start the private dashboard service locally:
+
+```bash
+docker compose --profile dashboard up -d binance-dashboard
+```
+
+The Docker dashboard binds only to `127.0.0.1:8765` on the host. It reads the
+mounted `logs/` directory as read-only and does not fetch Binance data by
+itself.
+
 Follow logs:
 
 ```bash
@@ -242,6 +286,31 @@ daily market price logs persist outside the container.
 
 Avoid running `docker compose config` with real secrets loaded, because Docker
 Compose may print expanded environment values to the terminal.
+
+## Private Hermes dashboard
+
+On Hermes, keep the dashboard private. Start it on the server with:
+
+```bash
+cd /opt/coinpilot
+docker compose --profile dashboard up -d binance-dashboard
+```
+
+From the Mac, open an SSH tunnel:
+
+```bash
+ssh -i ~/.ssh/coinpilot_codex_ed25519 -L 8765:127.0.0.1:8765 root@68.183.225.86
+```
+
+Then open this on the Mac:
+
+```text
+http://127.0.0.1:8765
+```
+
+The browser is local, but the dashboard data comes from Hermes logs. Do not
+bind the dashboard to `0.0.0.0` on the host or expose it publicly until we add
+authentication and a firewall plan.
 
 ## Recommended one-day local Docker test
 

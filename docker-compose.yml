@@ -20,3 +20,26 @@ services:
         "--alert-threshold",
         "0.5",
       ]
+
+  binance-dashboard:
+    profiles:
+      - dashboard
+    build:
+      context: .
+    image: binance-bot:local
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs:ro
+    ports:
+      - "127.0.0.1:8765:8765"
+    command:
+      [
+        "python3",
+        "-m",
+        "app.main",
+        "--dashboard",
+        "--dashboard-host",
+        "0.0.0.0",
+        "--dashboard-port",
+        "8765",
+      ]
