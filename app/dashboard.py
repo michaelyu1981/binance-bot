@@ -2,17 +2,47 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from decimal import Decimal
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import re
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from app.summary import DEFAULT_SUMMARY_HOURS, MarketSummary, build_market_summary
+from app.summary import (
+    DEFAULT_SUMMARY_HOURS,
+    AlertLogEntry,
+    MarketSummary,
+    PriceLogEntry,
+    build_market_summary,
+)
 
 
 DEFAULT_DASHBOARD_HOST = "127.0.0.1"
 DEFAULT_DASHBOARD_PORT = 8765
 RECENT_LOG_LINE_LIMIT = 300
+EXPECTED_WATCH_INTERVAL_SECONDS = 60
+STALE_AFTER_SECONDS = EXPECTED_WATCH_INTERVAL_SECONDS * 3
+ALERT_SYMBOL_RE = re.compile(r"\s+ALERT\s+(?P<symbol>[A-Z0-9]+):")
+ALERT_CHANGE_RE = re.compile(r":\s+(?P<change>[+-]?[0-9]+(?:\.[0-9]+)?)%")
+
+
+@dataclass(frozen=True)
+class TrendRow:
+    symbol: str
+    latest_price: Decimal
+    one_hour_change: Decimal | None
+    four_hour_change: Decimal | None
+    twenty_four_hour_change: Decimal | None
+
+
+@dataclass(frozen=True)
+class AlertStats:
+    total_today: int
+    counts_by_symbol: tuple[tuple[str, int], ...]
+    biggest_today: AlertLogEntry | None
 
 
 def run_dashboard_server(
@@ -70,6 +100,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
 def render_dashboard(summary: MarketSummary) -> str:
     """Render dashboard HTML from an already-built market summary."""
 
+    report_datetime = _parse_datetime(summary.report_timestamp)
     biggest_mover = (
         "None"
         if summary.biggest_mover is None
@@ -82,6 +113,9 @@ def render_dashboard(summary: MarketSummary) -> str:
     latest_timestamp = (
         max((entry.raw_timestamp for entry in summary.price_entries), default="No data")
     )
+    health_status, last_update_age = _health_status(summary, report_datetime)
+    alert_stats = _alert_stats(summary, report_datetime)
+    trend_rows = _trend_rows(summary, report_datetime)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -100,6 +134,7 @@ def render_dashboard(summary: MarketSummary) -> str:
       --line: #d9e0ea;
       --good: #087f5b;
       --bad: #c92a2a;
+      --warn: #b7791f;
       --accent: #1f6feb;
     }}
     * {{ box-sizing: border-box; }}
@@ -132,6 +167,14 @@ def render_dashboard(summary: MarketSummary) -> str:
       padding: 16px;
     }}
     .metric {{ font-size: 22px; font-weight: 700; margin-top: 6px; }}
+    .metric.compact {{
+      font-size: 15px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }}
+    .status-good {{ color: var(--good); }}
+    .status-warn {{ color: var(--warn); }}
+    .status-bad {{ color: var(--bad); }}
     table {{ width: 100%; border-collapse: collapse; }}
     th, td {{ padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: right; }}
     th:first-child, td:first-child {{ text-align: left; }}
@@ -189,9 +232,29 @@ def render_dashboard(summary: MarketSummary) -> str:
       {_metric_card("Biggest Mover", biggest_mover)}
       {_metric_card("Alerts", str(len(summary.alert_entries)))}
     </section>
+    <section class="grid">
+      {_metric_card("Monitor Health", health_status)}
+      {_metric_card("Last Update Age", last_update_age)}
+      {_metric_card("Expected Interval", f"{EXPECTED_WATCH_INTERVAL_SECONDS} seconds")}
+      {_metric_card("Timezone", "Philippine time UTC+8")}
+    </section>
     <section class="panel" style="margin-bottom:18px;">
       <h2>Prices</h2>
       {_render_price_table(summary)}
+    </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Trend</h2>
+      {_render_trend_table(trend_rows)}
+    </section>
+    <section class="grid">
+      {_metric_card("Alerts Today", str(alert_stats.total_today))}
+      {_metric_card("Alert Symbols", _format_alert_symbol_counts(alert_stats))}
+      {_metric_card("Biggest Alert Today", _format_biggest_alert(alert_stats))}
+      {_metric_card("Trading Mode", "Disabled")}
+    </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Alert History</h2>
+      {_render_alert_history(summary)}
     </section>
     <section class="grid">
       {_metric_card("Summary Window", f"{summary.summary_hours} hours")}
@@ -235,11 +298,59 @@ def _render_price_table(summary: MarketSummary) -> str:
     )
 
 
+def _render_trend_table(rows: tuple[TrendRow, ...]) -> str:
+    if not rows:
+        return "<p class=\"muted\">No trend data found in the selected log window.</p>"
+
+    table_rows = []
+    for row in rows:
+        table_rows.append(
+            "<tr>"
+            f"<td>{escape(row.symbol)}</td>"
+            f"<td>{escape(str(row.latest_price))}</td>"
+            f"<td class=\"{_percent_class(row.one_hour_change)}\">{escape(_format_optional_percent(row.one_hour_change))}</td>"
+            f"<td class=\"{_percent_class(row.four_hour_change)}\">{escape(_format_optional_percent(row.four_hour_change))}</td>"
+            f"<td class=\"{_percent_class(row.twenty_four_hour_change)}\">{escape(_format_optional_percent(row.twenty_four_hour_change))}</td>"
+            "</tr>"
+        )
+
+    return (
+        "<table>"
+        "<thead><tr><th>Symbol</th><th>Latest</th><th>1h</th><th>4h</th><th>24h</th></tr></thead>"
+        f"<tbody>{''.join(table_rows)}</tbody>"
+        "</table>"
+    )
+
+
+def _render_alert_history(summary: MarketSummary) -> str:
+    if not summary.alert_entries:
+        return "<p class=\"muted\">No alerts in the selected log window.</p>"
+
+    rows = []
+    for entry in reversed(summary.alert_entries[-20:]):
+        symbol = _alert_symbol(entry)
+        rows.append(
+            "<tr>"
+            f"<td>{escape(entry.timestamp.isoformat())}</td>"
+            f"<td>{escape(symbol or 'Unknown')}</td>"
+            f"<td>{escape(entry.raw_line)}</td>"
+            "</tr>"
+        )
+
+    return (
+        "<table>"
+        "<thead><tr><th>Time</th><th>Symbol</th><th>Alert</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+    )
+
+
 def _metric_card(label: str, value: str) -> str:
+    metric_class = "metric compact" if len(value) > 26 else "metric"
     return (
         "<section class=\"panel\">"
         f"<div class=\"muted\">{escape(label)}</div>"
-        f"<div class=\"metric\">{escape(value)}</div>"
+        f"<div class=\"{metric_class}\">{escape(value)}</div>"
         "</section>"
     )
 
@@ -292,6 +403,156 @@ def _strip_timestamp(line: str, timestamp: str) -> str:
 
 def _format_philippine_time_label(timestamp: str) -> str:
     return f"{timestamp} = Philippine time"
+
+
+def _health_status(
+    summary: MarketSummary,
+    report_datetime: datetime | None,
+) -> tuple[str, str]:
+    if not summary.price_entries:
+        return "No price data", "No data"
+    if report_datetime is None:
+        return "Unknown", "Unknown"
+
+    latest_entry = max(summary.price_entries, key=lambda entry: entry.timestamp)
+    age_seconds = max(0, int((report_datetime - latest_entry.timestamp).total_seconds()))
+    age_label = _format_duration(age_seconds)
+    if age_seconds <= STALE_AFTER_SECONDS:
+        return "OK", age_label
+    return "STALE", age_label
+
+
+def _trend_rows(
+    summary: MarketSummary,
+    report_datetime: datetime | None,
+) -> tuple[TrendRow, ...]:
+    if report_datetime is None:
+        return ()
+
+    entries_by_symbol: dict[str, list[PriceLogEntry]] = {}
+    for entry in summary.price_entries:
+        entries_by_symbol.setdefault(entry.symbol, []).append(entry)
+
+    rows: list[TrendRow] = []
+    for symbol in sorted(entries_by_symbol):
+        symbol_entries = sorted(entries_by_symbol[symbol], key=lambda entry: entry.timestamp)
+        latest_entry = symbol_entries[-1]
+        rows.append(
+            TrendRow(
+                symbol=symbol,
+                latest_price=latest_entry.price,
+                one_hour_change=_window_change(symbol_entries, report_datetime, hours=1),
+                four_hour_change=_window_change(symbol_entries, report_datetime, hours=4),
+                twenty_four_hour_change=_window_change(symbol_entries, report_datetime, hours=24),
+            )
+        )
+    return tuple(rows)
+
+
+def _window_change(
+    entries: list[PriceLogEntry],
+    report_datetime: datetime,
+    *,
+    hours: int,
+) -> Decimal | None:
+    cutoff = report_datetime - timedelta(hours=hours)
+    window_entries = [entry for entry in entries if entry.timestamp >= cutoff]
+    if len(window_entries) < 2:
+        return None
+
+    first_entry = window_entries[0]
+    last_entry = window_entries[-1]
+    if first_entry.price == 0:
+        return None
+    return ((last_entry.price - first_entry.price) / first_entry.price) * Decimal("100")
+
+
+def _alert_stats(
+    summary: MarketSummary,
+    report_datetime: datetime | None,
+) -> AlertStats:
+    if report_datetime is None:
+        return AlertStats(total_today=0, counts_by_symbol=(), biggest_today=None)
+
+    today_alerts = [
+        entry
+        for entry in summary.alert_entries
+        if entry.timestamp.date() == report_datetime.date()
+    ]
+    counts: dict[str, int] = {}
+    for entry in today_alerts:
+        symbol = _alert_symbol(entry)
+        if symbol is None:
+            continue
+        counts[symbol] = counts.get(symbol, 0) + 1
+
+    biggest_alert = max(
+        today_alerts,
+        key=lambda entry: abs(_alert_change(entry) or Decimal("0")),
+        default=None,
+    )
+    return AlertStats(
+        total_today=len(today_alerts),
+        counts_by_symbol=tuple(sorted(counts.items())),
+        biggest_today=biggest_alert,
+    )
+
+
+def _alert_symbol(entry: AlertLogEntry) -> str | None:
+    match = ALERT_SYMBOL_RE.search(entry.raw_line)
+    if match is None:
+        return None
+    return match.group("symbol")
+
+
+def _alert_change(entry: AlertLogEntry) -> Decimal | None:
+    match = ALERT_CHANGE_RE.search(entry.raw_line)
+    if match is None:
+        return None
+    return Decimal(match.group("change"))
+
+
+def _format_alert_symbol_counts(stats: AlertStats) -> str:
+    if not stats.counts_by_symbol:
+        return "None"
+    return ", ".join(f"{symbol}: {count}" for symbol, count in stats.counts_by_symbol)
+
+
+def _format_biggest_alert(stats: AlertStats) -> str:
+    if stats.biggest_today is None:
+        return "None"
+    return stats.biggest_today.raw_line
+
+
+def _format_duration(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    remaining_seconds = seconds % 60
+    if minutes < 60:
+        return f"{minutes}m {remaining_seconds}s"
+    hours = minutes // 60
+    remaining_minutes = minutes % 60
+    return f"{hours}h {remaining_minutes}m"
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _percent_class(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    return "positive" if value >= 0 else "negative"
+
+
+def _format_optional_percent(value: Decimal | None) -> str:
+    if value is None:
+        return "Not enough data"
+    return _format_percent(value)
 
 
 def _format_percent(value: object) -> str:

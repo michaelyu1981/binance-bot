@@ -178,6 +178,18 @@ plan is added later.
 The Recent Log Lines section groups each watch cycle by timestamp and labels
 the timestamp as Philippine time. The log view is scrollable for easier review.
 
+The dashboard also shows read-only operational visibility:
+
+- monitor health based on the latest log timestamp
+- last update age
+- alert count for the selected summary window
+- alert count for the current Philippine date
+- recent alert history
+- 1h, 4h, and 24h price movement from local logs
+
+These values are calculated from local log files only. They are not buy/sell
+signals and do not enable trading.
+
 ## Optional Telegram alerts
 
 Telegram alerts are optional. They send only `ALERT` lines from watch mode when
