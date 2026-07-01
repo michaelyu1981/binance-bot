@@ -55,3 +55,15 @@ Codex must not rewrite Git history.
 Codex must show changes before commit.
 
 Codex must not touch the Bayanifi project from this repository.
+
+## AI Trading Agents Registry
+
+These agent profiles are advisory documentation only. They must not enable
+trading, bypass safety gates, place orders, or contain secrets.
+
+### Active Risk & Analyst Agents
+
+- **Michael Burry Agent** (`docs/bots/bot_michael_burry.md`): Contrarian macro/short analyst.
+- **Ed Seykota Agent** (`docs/bots/bot_ed_seykota.md`): Long-term mathematical trend follower.
+- **William O'Neil Agent** (`docs/bots/bot_william_oneil.md`): Parabolic breakout and volume specialist.
+- **Mark Minervini Agent** (`docs/bots/bot_mark_minervini.md`): High-velocity swing trade and risk manager.
