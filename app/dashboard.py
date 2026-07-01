@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import base64
+import hashlib
+import hmac
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 import re
+import sqlite3
+import time
 from typing import Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
+from app.candle_store import DEFAULT_CANDLE_DB_PATH
+from app.config import PUBLIC_MARKET_WATCHLIST
 from app.health import (
     CANDLE_COLLECTOR_HEALTH_PATH,
     PRICE_MONITOR_HEALTH_PATH,
@@ -33,6 +41,12 @@ EXPECTED_WATCH_INTERVAL_SECONDS = 300
 STALE_AFTER_SECONDS = EXPECTED_WATCH_INTERVAL_SECONDS * 3
 ALERT_SYMBOL_RE = re.compile(r"\s+ALERT\s+(?P<symbol>[A-Z0-9]+):")
 ALERT_CHANGE_RE = re.compile(r":\s+(?P<change>[+-]?[0-9]+(?:\.[0-9]+)?)%")
+DASHBOARD_SESSION_COOKIE = "coinpilot_session"
+DASHBOARD_SESSION_TTL_SECONDS = 12 * 60 * 60
+DEFAULT_CHART_INTERVAL = "1h"
+CHART_INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d")
+CHART_CANDLE_LIMIT = 120
+PHILIPPINE_TIMEZONE = timezone(timedelta(hours=8))
 
 
 @dataclass(frozen=True)
@@ -57,6 +71,25 @@ class LogCoverage:
     latest_time: str
     duration: str
     price_cycles: int
+
+
+@dataclass(frozen=True)
+class ChartCandle:
+    symbol: str
+    interval: str
+    open_time_ms: int
+    open_price: Decimal
+    high_price: Decimal
+    low_price: Decimal
+    close_price: Decimal
+    volume: Decimal
+
+
+@dataclass(frozen=True)
+class ChartSeries:
+    symbol: str
+    interval: str
+    candles: tuple[ChartCandle, ...]
 
 
 def run_dashboard_server(
@@ -86,24 +119,93 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
         def do_HEAD(self) -> None:
             self._serve_dashboard(include_body=False)
 
+        def do_POST(self) -> None:
+            parsed_url = urlparse(self.path)
+            if parsed_url.path != "/login":
+                self.send_error(404, "Not found")
+                return
+            self._handle_login()
+
         def _serve_dashboard(self, *, include_body: bool) -> None:
             parsed_url = urlparse(self.path)
-            if parsed_url.path not in ("/", "/index.html"):
+            if parsed_url.path == "/logout":
+                self._handle_logout()
+                return
+            if parsed_url.path == "/login":
+                self._write_html(
+                    render_login_page(message=""),
+                    include_body=include_body,
+                )
+                return
+            if parsed_url.path not in ("/", "/index.html", "/charts"):
                 self.send_error(404, "Not found")
                 return
 
-            query = parse_qs(parsed_url.query)
-            summary_hours = _parse_summary_hours(query.get("hours", ["24"])[0])
-            summary = build_market_summary(summary_hours=summary_hours)
-            body = render_dashboard(summary)
-            encoded_body = body.encode("utf-8")
+            if _is_auth_required() and not _is_authenticated(self.headers.get("Cookie", "")):
+                self._redirect("/login")
+                return
 
-            self.send_response(200)
+            query = parse_qs(parsed_url.query)
+            if parsed_url.path == "/charts":
+                interval = _parse_chart_interval(query.get("interval", [DEFAULT_CHART_INTERVAL])[0])
+                body = render_chart_view(interval=interval)
+            else:
+                summary_hours = _parse_summary_hours(query.get("hours", ["24"])[0])
+                summary = build_market_summary(summary_hours=summary_hours)
+                body = render_dashboard(summary)
+            self._write_html(body, include_body=include_body)
+
+        def _handle_login(self) -> None:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(content_length).decode("utf-8")
+            form = parse_qs(body)
+            username = form.get("username", [""])[0]
+            password = form.get("password", [""])[0]
+
+            if _authenticate_credentials(username, password):
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header(
+                    "Set-Cookie",
+                    _build_session_cookie(username),
+                )
+                self.end_headers()
+                return
+
+            self._write_html(
+                render_login_page(message="Invalid dashboard username or password."),
+                include_body=True,
+                status=401,
+            )
+
+        def _handle_logout(self) -> None:
+            self.send_response(303)
+            self.send_header("Location", "/login")
+            self.send_header(
+                "Set-Cookie",
+                f"{DASHBOARD_SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+            )
+            self.end_headers()
+
+        def _write_html(
+            self,
+            body: str,
+            *,
+            include_body: bool,
+            status: int = 200,
+        ) -> None:
+            encoded_body = body.encode("utf-8")
+            self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded_body)))
             self.end_headers()
             if include_body:
                 self.wfile.write(encoded_body)
+
+        def _redirect(self, location: str) -> None:
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.end_headers()
 
         def log_message(self, format: str, *args: object) -> None:
             return
@@ -172,6 +274,34 @@ def render_dashboard(summary: MarketSummary) -> str:
       border-bottom: 1px solid var(--line);
       background: var(--panel);
     }}
+    .topbar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }}
+    .nav {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .nav a {{
+      color: var(--text);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: var(--panel);
+    }}
+    .nav a.active {{
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 700;
+    }}
     h1, h2 {{ margin: 0; }}
     h1 {{ font-size: 24px; }}
     h2 {{ font-size: 16px; margin-bottom: 12px; }}
@@ -237,9 +367,55 @@ def render_dashboard(summary: MarketSummary) -> str:
       padding: 2px 0;
     }}
     .stack {{ display: grid; gap: 18px; }}
+    .chart-grid {{
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 18px;
+    }}
+    .sparkline {{
+      width: 100%;
+      height: 180px;
+      display: block;
+      background: #fbfcfe;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }}
+    .login-wrap {{
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }}
+    .login-panel {{
+      width: min(420px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+    }}
+    label {{ display: block; color: var(--muted); margin-top: 14px; }}
+    input {{
+      width: 100%;
+      padding: 10px;
+      margin-top: 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font: inherit;
+    }}
+    button {{
+      margin-top: 18px;
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      font-weight: 700;
+    }}
     @media (max-width: 760px) {{
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      main, header {{ padding: 16px; }}
+      main, header, .topbar {{ padding: 16px; }}
     }}
   </style>
 </head>
@@ -248,6 +424,7 @@ def render_dashboard(summary: MarketSummary) -> str:
     <h1>CoinPilot</h1>
     <div class="muted">Read-only public Binance market monitor. No API key. No account access. No orders.</div>
   </header>
+  {_render_nav("dashboard")}
   <main>
     <section class="grid">
       {_metric_card("Report Time", summary.report_timestamp)}
@@ -305,6 +482,411 @@ def render_dashboard(summary: MarketSummary) -> str:
 </body>
 </html>
 """
+
+
+def render_chart_view(*, interval: str) -> str:
+    """Render read-only candle chart view from local SQLite data."""
+
+    series_list = _load_chart_series(interval=interval)
+    options = "".join(
+        f"<a class=\"{'active' if item == interval else ''}\" href=\"/charts?{urlencode({'interval': item})}\">{escape(item)}</a>"
+        for item in CHART_INTERVALS
+    )
+    chart_sections = "".join(_render_chart_series(series) for series in series_list)
+    if not chart_sections:
+        chart_sections = (
+            "<section class=\"panel\">"
+            "<p class=\"muted\">No candle data found yet. Run the public candle collector first.</p>"
+            "</section>"
+        )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <title>CoinPilot Charts</title>
+  <style>{_shared_page_css()}</style>
+</head>
+<body>
+  <header>
+    <h1>CoinPilot Charts</h1>
+    <div class="muted">Read-only candle view from local SQLite. No API key. No account access. No orders.</div>
+  </header>
+  {_render_nav("charts")}
+  <main>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Interval</h2>
+      <div class="nav">{options}</div>
+    </section>
+    <section class="chart-grid">
+      {chart_sections}
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def render_login_page(*, message: str) -> str:
+    """Render dashboard login page."""
+
+    auth_note = (
+        "Dashboard password is configured."
+        if _is_auth_required()
+        else "Dashboard password is not configured; login is disabled."
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CoinPilot Login</title>
+  <style>{_shared_page_css()}</style>
+</head>
+<body>
+  <main class="login-wrap">
+    <section class="login-panel">
+      <h1>CoinPilot</h1>
+      <p class="muted">Private read-only dashboard.</p>
+      <p class="muted">{escape(auth_note)}</p>
+      {_render_login_message(message)}
+      <form method="post" action="/login">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def _shared_page_css() -> str:
+    return """
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --text: #1c2430;
+      --muted: #647084;
+      --line: #d9e0ea;
+      --good: #087f5b;
+      --bad: #c92a2a;
+      --accent: #1f6feb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      padding: 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1, h2 { margin: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 16px; margin-bottom: 12px; }
+    main { padding: 24px; max-width: 1180px; margin: 0 auto; }
+    .muted { color: var(--muted); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .nav a {
+      color: var(--text);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 10px;
+      background: var(--panel);
+    }
+    .nav a.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+    .chart-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+    .sparkline {
+      width: 100%;
+      height: 180px;
+      display: block;
+      background: #fbfcfe;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    .positive { color: var(--good); }
+    .negative { color: var(--bad); }
+    .login-wrap {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .login-panel {
+      width: min(420px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    label { display: block; color: var(--muted); margin-top: 14px; }
+    input {
+      width: 100%;
+      padding: 10px;
+      margin-top: 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font: inherit;
+    }
+    button {
+      margin-top: 18px;
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent);
+      color: white;
+      font: inherit;
+      font-weight: 700;
+    }
+    @media (max-width: 760px) {
+      main, header, .topbar { padding: 16px; }
+    }
+    """
+
+
+def _render_nav(active: str) -> str:
+    logout_link = "<a href=\"/logout\">Logout</a>" if _is_auth_required() else ""
+    return (
+        "<nav class=\"topbar\">"
+        "<div class=\"nav\">"
+        f"<a class=\"{'active' if active == 'dashboard' else ''}\" href=\"/\">Dashboard Main</a>"
+        f"<a class=\"{'active' if active == 'charts' else ''}\" href=\"/charts\">Chart View</a>"
+        "</div>"
+        f"<div class=\"nav\">{logout_link}</div>"
+        "</nav>"
+    )
+
+
+def _render_login_message(message: str) -> str:
+    if not message:
+        return ""
+    return f"<p class=\"negative\">{escape(message)}</p>"
+
+
+def _load_chart_series(*, interval: str) -> tuple[ChartSeries, ...]:
+    if not DEFAULT_CANDLE_DB_PATH.exists():
+        return ()
+
+    series_list: list[ChartSeries] = []
+    try:
+        connection = sqlite3.connect(DEFAULT_CANDLE_DB_PATH)
+        for symbol in PUBLIC_MARKET_WATCHLIST:
+            rows = connection.execute(
+                """
+                SELECT symbol, interval, open_time_ms, open, high, low, close, volume
+                FROM candles
+                WHERE symbol = ? AND interval = ?
+                ORDER BY open_time_ms DESC
+                LIMIT ?
+                """,
+                (symbol, interval, CHART_CANDLE_LIMIT),
+            ).fetchall()
+            candles = tuple(
+                ChartCandle(
+                    symbol=row[0],
+                    interval=row[1],
+                    open_time_ms=int(row[2]),
+                    open_price=Decimal(row[3]),
+                    high_price=Decimal(row[4]),
+                    low_price=Decimal(row[5]),
+                    close_price=Decimal(row[6]),
+                    volume=Decimal(row[7]),
+                )
+                for row in reversed(rows)
+            )
+            series_list.append(ChartSeries(symbol=symbol, interval=interval, candles=candles))
+    except sqlite3.Error:
+        return ()
+    finally:
+        try:
+            connection.close()
+        except UnboundLocalError:
+            pass
+
+    return tuple(series_list)
+
+
+def _render_chart_series(series: ChartSeries) -> str:
+    if not series.candles:
+        return (
+            "<section class=\"panel\">"
+            f"<h2>{escape(series.symbol)} {escape(series.interval)}</h2>"
+            "<p class=\"muted\">No candle rows found for this interval.</p>"
+            "</section>"
+        )
+
+    latest = series.candles[-1]
+    first = series.candles[0]
+    change_percent = Decimal("0")
+    if first.close_price != 0:
+        change_percent = ((latest.close_price - first.close_price) / first.close_price) * Decimal("100")
+    change_class = "positive" if change_percent >= 0 else "negative"
+    return (
+        "<section class=\"panel\">"
+        f"<h2>{escape(series.symbol)} {escape(series.interval)}</h2>"
+        f"{_render_sparkline(series.candles)}"
+        "<table>"
+        "<thead><tr><th>Latest Time</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Window Change</th></tr></thead>"
+        "<tbody><tr>"
+        f"<td>{escape(_format_candle_time(latest.open_time_ms))}</td>"
+        f"<td>{escape(str(latest.open_price))}</td>"
+        f"<td>{escape(str(latest.high_price))}</td>"
+        f"<td>{escape(str(latest.low_price))}</td>"
+        f"<td>{escape(str(latest.close_price))}</td>"
+        f"<td>{escape(str(latest.volume))}</td>"
+        f"<td class=\"{change_class}\">{escape(_format_percent(change_percent))}</td>"
+        "</tr></tbody></table>"
+        "</section>"
+    )
+
+
+def _render_sparkline(candles: tuple[ChartCandle, ...]) -> str:
+    if len(candles) < 2:
+        return "<p class=\"muted\">Not enough candles for chart.</p>"
+
+    width = Decimal("1000")
+    height = Decimal("180")
+    padding = Decimal("14")
+    closes = [candle.close_price for candle in candles]
+    low = min(closes)
+    high = max(closes)
+    spread = high - low
+    if spread == 0:
+        spread = Decimal("1")
+    points = []
+    for index, close in enumerate(closes):
+        x = (Decimal(index) / Decimal(len(closes) - 1)) * width
+        y = padding + ((high - close) / spread) * (height - (padding * 2))
+        points.append(f"{x:.2f},{y:.2f}")
+    return (
+        "<svg class=\"sparkline\" viewBox=\"0 0 1000 180\" preserveAspectRatio=\"none\" role=\"img\">"
+        "<line x1=\"0\" y1=\"90\" x2=\"1000\" y2=\"90\" stroke=\"#d9e0ea\" stroke-width=\"1\" />"
+        f"<polyline points=\"{' '.join(points)}\" fill=\"none\" stroke=\"#1f6feb\" stroke-width=\"3\" />"
+        "</svg>"
+    )
+
+
+def _format_candle_time(open_time_ms: int) -> str:
+    return datetime.fromtimestamp(open_time_ms / 1000, tz=PHILIPPINE_TIMEZONE).isoformat()
+
+
+def _is_auth_required() -> bool:
+    return bool(os.environ.get("DASHBOARD_PASSWORD", ""))
+
+
+def _dashboard_username() -> str:
+    return os.environ.get("DASHBOARD_USERNAME", "admin") or "admin"
+
+
+def _dashboard_password() -> str:
+    return os.environ.get("DASHBOARD_PASSWORD", "")
+
+
+def _authenticate_credentials(username: str, password: str) -> bool:
+    if not _is_auth_required():
+        return True
+    return hmac.compare_digest(username, _dashboard_username()) and hmac.compare_digest(
+        password,
+        _dashboard_password(),
+    )
+
+
+def _build_session_cookie(username: str) -> str:
+    expires_at = int(time.time()) + DASHBOARD_SESSION_TTL_SECONDS
+    payload = f"{username}:{expires_at}"
+    signature = _sign_payload(payload)
+    token = base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("ascii")
+    return (
+        f"{DASHBOARD_SESSION_COOKIE}={token}; "
+        "HttpOnly; SameSite=Lax; Path=/; "
+        f"Max-Age={DASHBOARD_SESSION_TTL_SECONDS}"
+    )
+
+
+def _is_authenticated(cookie_header: str) -> bool:
+    if not _is_auth_required():
+        return True
+    cookies = _parse_cookies(cookie_header)
+    token = cookies.get(DASHBOARD_SESSION_COOKIE)
+    if not token:
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+
+    parts = decoded.rsplit(":", 2)
+    if len(parts) != 3:
+        return False
+    username, expires_at_text, signature = parts
+    payload = f"{username}:{expires_at_text}"
+    if not hmac.compare_digest(signature, _sign_payload(payload)):
+        return False
+    if not hmac.compare_digest(username, _dashboard_username()):
+        return False
+    try:
+        expires_at = int(expires_at_text)
+    except ValueError:
+        return False
+    return expires_at > int(time.time())
+
+
+def _sign_payload(payload: str) -> str:
+    return hmac.new(
+        _dashboard_password().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _parse_cookies(cookie_header: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for item in cookie_header.split(";"):
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        cookies[key.strip()] = value.strip()
+    return cookies
 
 
 def _render_price_table(summary: MarketSummary) -> str:
@@ -656,3 +1238,9 @@ def _parse_summary_hours(value: str) -> int:
     if parsed_value <= 0:
         return DEFAULT_SUMMARY_HOURS
     return parsed_value
+
+
+def _parse_chart_interval(value: str) -> str:
+    if value in CHART_INTERVALS:
+        return value
+    return DEFAULT_CHART_INTERVAL

@@ -51,6 +51,9 @@ services:
       context: .
     image: binance-bot:local
     restart: unless-stopped
+    environment:
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:-admin}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
     volumes:
       - ./logs:/app/logs:ro
       - ./data:/app/data:ro

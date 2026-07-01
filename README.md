@@ -161,9 +161,9 @@ Legacy `logs/market_prices.log` is still read as a fallback if it exists.
 
 ## Local dashboard
 
-Dashboard mode reads local market price logs and renders a simple browser view.
-It does not fetch Binance data by itself, does not use Binance account access,
-and does not include trading controls.
+Dashboard mode reads local market price logs and local SQLite candle data. It
+does not fetch Binance data by itself, does not use Binance account access, and
+does not include trading controls.
 
 ```bash
 python3 -m app.main --dashboard
@@ -177,6 +177,31 @@ python3 -m app.main --dashboard --dashboard-host 127.0.0.1 --dashboard-port 8765
 
 Keep the dashboard bound to `127.0.0.1` unless an authentication and firewall
 plan is added later.
+
+Dashboard navigation includes:
+
+- Dashboard Main
+- Chart View
+
+Chart View reads local SQLite candles from:
+
+```text
+data/market_data.sqlite3
+```
+
+It renders read-only close-price sparklines and latest OHLC rows by symbol and
+interval. These charts are not buy/sell signals and do not enable trading.
+
+Dashboard login is optional and controlled only through environment variables:
+
+```bash
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=
+```
+
+Leave `DASHBOARD_PASSWORD` empty to disable login for local/private-tunnel use.
+Set a password in `.env` on Hermes to require login. Do not commit dashboard
+passwords or paste them into docs, code, logs, screenshots, or Codex prompts.
 
 The Recent Log Lines section groups each watch cycle by timestamp and labels
 the timestamp as Philippine time. The log view is scrollable for easier review.
@@ -448,8 +473,22 @@ http://127.0.0.1:8765
 ```
 
 The browser is local, but the dashboard data comes from Hermes logs. Do not
-bind the dashboard to `0.0.0.0` on the host or expose it publicly until we add
-authentication and a firewall plan.
+bind the dashboard to `0.0.0.0` on the host or expose it publicly without a
+firewall and authentication plan.
+
+To require login on Hermes, set these in `/opt/coinpilot/.env`:
+
+```bash
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=replace-with-a-private-password
+```
+
+Then recreate the private dashboard service:
+
+```bash
+cd /opt/coinpilot
+docker compose --profile dashboard up -d binance-dashboard
+```
 
 ## Recommended one-day local Docker test
 
