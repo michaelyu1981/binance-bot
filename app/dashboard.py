@@ -37,6 +37,7 @@ from app.indicators import (
     IndicatorSnapshot,
     build_indicator_snapshot,
     calculate_bollinger_band_series,
+    calculate_rsi_series,
     describe_average_position,
     describe_atr,
     describe_bollinger,
@@ -392,6 +393,7 @@ def render_dashboard(summary: MarketSummary) -> str:
       border: 1px solid var(--line);
       border-radius: 8px;
     }}
+    .rsi-chart {{ height: 132px; margin-top: 10px; }}
     .login-wrap {{
       min-height: 100vh;
       display: grid;
@@ -657,6 +659,7 @@ def _shared_page_css() -> str:
       border: 1px solid var(--line);
       border-radius: 8px;
     }
+    .rsi-chart { height: 132px; margin-top: 10px; }
     .chart-wrap {
       position: relative;
     }
@@ -799,6 +802,7 @@ def _render_chart_series(series: ChartSeries) -> str:
         "<section class=\"panel\">"
         f"<h2>{escape(series.symbol)} {escape(series.interval)}</h2>"
         f"{_render_sparkline(series.candles)}"
+        f"{_render_rsi_panel(series.candles)}"
         "<table>"
         "<thead><tr><th>Latest Time</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Window Change</th></tr></thead>"
         "<tbody><tr>"
@@ -851,6 +855,53 @@ def _render_indicator_table(series_list: tuple[ChartSeries, ...]) -> str:
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
+    )
+
+
+def _render_rsi_panel(candles: tuple[ChartCandle, ...]) -> str:
+    closes = [candle.close_price for candle in candles]
+    rsi_values = calculate_rsi_series(closes)
+    if not any(value is not None for value in rsi_values):
+        return "<p class=\"muted\">Not enough candles for RSI chart.</p>"
+
+    width = Decimal("1000")
+    height = Decimal("132")
+    chart_left = Decimal("86")
+    chart_right = Decimal("24")
+    chart_top = Decimal("12")
+    chart_bottom = Decimal("24")
+    chart_width = width - chart_left - chart_right
+    chart_height = height - chart_top - chart_bottom
+
+    def point_for_rsi(index: int, value: Decimal) -> tuple[Decimal, Decimal]:
+        x = chart_left + (Decimal(index) / Decimal(len(candles) - 1)) * chart_width
+        y = chart_top + ((Decimal("100") - value) / Decimal("100")) * chart_height
+        return x, y
+
+    rsi_points = _series_points(
+        tuple((index, value) for index, value in enumerate(rsi_values)),
+        point_for_rsi,
+    )
+    latest_rsi = next((value for value in reversed(rsi_values) if value is not None), None)
+    if latest_rsi is None:
+        return "<p class=\"muted\">Not enough candles for RSI chart.</p>"
+
+    reference_lines = "".join(
+        _rsi_reference_line(level, chart_left, width - chart_right, chart_top, chart_height)
+        for level in (Decimal("70"), Decimal("50"), Decimal("30"))
+    )
+    latest_x, latest_y = point_for_rsi(len(candles) - 1, latest_rsi)
+    return (
+        "<div class=\"rsi-wrap\">"
+        "<svg class=\"sparkline rsi-chart\" viewBox=\"0 0 1000 132\" preserveAspectRatio=\"none\" role=\"img\">"
+        f"{reference_lines}"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{chart_top:.2f}\" x2=\"{chart_left:.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{(chart_top + chart_height):.2f}\" x2=\"{(width - chart_right):.2f}\" y2=\"{(chart_top + chart_height):.2f}\" stroke=\"#b8c2d1\" stroke-width=\"1\" />"
+        f"<polyline points=\"{rsi_points}\" fill=\"none\" stroke=\"#7c3aed\" stroke-width=\"2.5\" />"
+        f"<circle cx=\"{latest_x:.2f}\" cy=\"{latest_y:.2f}\" r=\"4\" fill=\"#7c3aed\" />"
+        f"<text x=\"{(width - chart_right):.2f}\" y=\"18\" font-size=\"13\" fill=\"#7c3aed\" text-anchor=\"end\">RSI 14 {_format_rsi_value(latest_rsi)}</text>"
+        "</svg>"
+        "</div>"
     )
 
 
@@ -1030,6 +1081,22 @@ def _series_points(
     return " ".join(points)
 
 
+def _rsi_reference_line(
+    level: Decimal,
+    chart_left: Decimal,
+    chart_right_x: Decimal,
+    chart_top: Decimal,
+    chart_height: Decimal,
+) -> str:
+    y = chart_top + ((Decimal("100") - level) / Decimal("100")) * chart_height
+    color = "#c92a2a" if level == Decimal("70") else "#087f5b" if level == Decimal("30") else "#d9e0ea"
+    return (
+        f"<line x1=\"{chart_left:.2f}\" y1=\"{y:.2f}\" x2=\"{chart_right_x:.2f}\" y2=\"{y:.2f}\" "
+        f"stroke=\"{color}\" stroke-width=\"1\" stroke-dasharray=\"5 5\" opacity=\"0.85\" />"
+        f"<text x=\"10\" y=\"{(y + Decimal('4')):.2f}\" font-size=\"13\" fill=\"#647084\">RSI {level:.0f}</text>"
+    )
+
+
 def _format_candle_time(open_time_ms: int) -> str:
     return datetime.fromtimestamp(open_time_ms / 1000, tz=PHILIPPINE_TIMEZONE).isoformat()
 
@@ -1050,6 +1117,10 @@ def _format_indicator_value(value: Decimal | None) -> str:
     if value is None:
         return "Not enough data"
     return _format_axis_price(value)
+
+
+def _format_rsi_value(value: Decimal) -> str:
+    return f"{value:.1f}"
 
 
 def _format_bollinger_value(snapshot: IndicatorSnapshot) -> str:

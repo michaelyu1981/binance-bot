@@ -107,6 +107,18 @@ def calculate_rsi(closes: Sequence[Decimal], period: int = RSI_PERIOD) -> Decima
     return Decimal("100") - (Decimal("100") / (Decimal("1") + relative_strength))
 
 
+def calculate_rsi_series(
+    closes: Sequence[Decimal],
+    period: int = RSI_PERIOD,
+) -> tuple[Decimal | None, ...]:
+    """Return RSI values aligned to close prices."""
+
+    values: list[Decimal | None] = []
+    for index in range(len(closes)):
+        values.append(calculate_rsi(closes[: index + 1], period=period))
+    return tuple(values)
+
+
 def calculate_sma(closes: Sequence[Decimal], period: int) -> Decimal | None:
     """Return the latest simple moving average."""
 
