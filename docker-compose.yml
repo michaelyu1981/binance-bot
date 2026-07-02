@@ -44,6 +44,28 @@ services:
         "90",
       ]
 
+  binance-signals:
+    build:
+      context: .
+    image: binance-bot:local
+    restart: unless-stopped
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    command:
+      [
+        "python3",
+        "-m",
+        "app.main",
+        "--watch-signals",
+        "--watch",
+        "--interval",
+        "300",
+      ]
+
   binance-dashboard:
     profiles:
       - dashboard

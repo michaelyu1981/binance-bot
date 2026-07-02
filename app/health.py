@@ -15,6 +15,7 @@ from app.logger import current_timestamp
 HEALTH_DIR = Path("data/health")
 PRICE_MONITOR_HEALTH_PATH = HEALTH_DIR / "price_monitor.json"
 CANDLE_COLLECTOR_HEALTH_PATH = HEALTH_DIR / "candle_collector.json"
+SIGNAL_WATCHER_HEALTH_PATH = HEALTH_DIR / "signal_watcher.json"
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,7 @@ from app.config import PUBLIC_MARKET_WATCHLIST
 from app.health import (
     CANDLE_COLLECTOR_HEALTH_PATH,
     PRICE_MONITOR_HEALTH_PATH,
+    SIGNAL_WATCHER_HEALTH_PATH,
     ServiceHealth,
     read_service_health,
 )
@@ -267,6 +268,10 @@ def render_dashboard(summary: MarketSummary) -> str:
         CANDLE_COLLECTOR_HEALTH_PATH,
         service="candle_collector",
     )
+    signal_watcher_health = read_service_health(
+        SIGNAL_WATCHER_HEALTH_PATH,
+        service="signal_watcher",
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -472,6 +477,12 @@ def render_dashboard(summary: MarketSummary) -> str:
       {_metric_card("Price Last Success", price_monitor_health.last_success or "None")}
       {_service_health_card("Candle Collector", candle_collector_health)}
       {_metric_card("Candle Last Success", candle_collector_health.last_success or "None")}
+    </section>
+    <section class="grid">
+      {_service_health_card("Signal Watcher", signal_watcher_health)}
+      {_metric_card("Signal Last Success", signal_watcher_health.last_success or "None")}
+      {_metric_card("Signal Last Error", signal_watcher_health.last_error_message or "None")}
+      {_metric_card("Signal Safety", "Advisory only")}
     </section>
     <section class="grid">
       {_metric_card("First Log Time", log_coverage.first_time)}

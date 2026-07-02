@@ -19,6 +19,7 @@ from app.candle_store import (
 from app.config import DEFAULT_COLLECTION_INTERVAL_SECONDS
 from app.dashboard import DEFAULT_DASHBOARD_HOST, DEFAULT_DASHBOARD_PORT, run_dashboard_server
 from app.monitor import run_once, run_watch
+from app.signal_watcher import run_signal_watch_loop, run_signal_watch_once
 from app.summary import DEFAULT_SUMMARY_HOURS, build_market_summary, format_market_summary
 from app.telegram_notifier import TelegramSendError, send_summary_to_telegram
 
@@ -118,6 +119,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Run SQLite VACUUM during --db-maintenance.",
     )
+    parser.add_argument(
+        "--watch-signals",
+        action="store_true",
+        help="Compare deterministic signal state from local candles and alert on meaningful changes.",
+    )
+    parser.add_argument(
+        "--no-signal-telegram",
+        action="store_true",
+        help="Do not send Telegram from --watch-signals even if Telegram env vars are configured.",
+    )
     return parser.parse_args(argv)
 
 
@@ -170,6 +181,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(format_candle_store_stats(stats))
         return 0
+
+    if args.watch_signals:
+        send_telegram = not args.no_signal_telegram
+        if args.watch:
+            return run_signal_watch_loop(
+                interval_seconds=args.interval,
+                send_telegram=send_telegram,
+            )
+        return run_signal_watch_once(send_telegram=send_telegram)
 
     if args.collect_candles:
         if args.watch:

@@ -374,6 +374,34 @@ tests, logs, screenshots, or Codex prompts.
 If Telegram delivery fails, the app prints a clear send failure message without
 printing the Telegram token.
 
+## Signal watcher alerts
+
+Signal watcher alerts are optional and advisory only. They read local SQLite
+candle data, compare deterministic technical signal state, and alert only when
+meaningful signal fields change.
+
+Watched layers:
+
+- Overall multi-timeframe summary
+- `4h` signal, bias, and market type
+- `1d` signal, bias, and market type
+
+Run one local signal check without Telegram:
+
+```bash
+python3 -m app.main --watch-signals --no-signal-telegram
+```
+
+Run continuously:
+
+```bash
+python3 -m app.main --watch-signals --watch --interval 300
+```
+
+The first run initializes `data/signal_state.json` and does not send a Telegram
+alert. Later runs compare against that baseline. The watcher does not use AI,
+does not fetch Binance account data, and cannot place orders.
+
 ## Docker local setup
 
 The Docker setup runs the same read-only public market monitor. The default
@@ -383,6 +411,7 @@ loop:
 ```bash
 python3 -m app.main --watch --interval 300 --alert-threshold 0.5
 python3 -m app.main --collect-candles --watch --interval 300 --candle-limit 100 --retention-days 90
+python3 -m app.main --watch-signals --watch --interval 300
 ```
 
 It does not add Binance account access, buy/sell logic, order endpoints,
@@ -434,6 +463,7 @@ This starts:
 
 - `binance-bot` for public price monitoring
 - `binance-candles` for public candle collection
+- `binance-signals` for read-only signal-change alerts
 
 Start the private dashboard service locally:
 
@@ -450,6 +480,7 @@ Follow logs:
 ```bash
 docker compose logs -f binance-bot
 docker compose logs -f binance-candles
+docker compose logs -f binance-signals
 ```
 
 Stop the service:
