@@ -1257,29 +1257,52 @@ def _render_account_snapshot_panel() -> str:
     return (
         "<section class=\"panel\" style=\"margin-bottom:18px;\">"
         "<h2>Account Snapshot</h2>"
-        f"{_render_account_safety_warning(snapshot)}"
+        f"{_render_account_policy_panel(snapshot)}"
         "<section class=\"grid\">"
+        f"{_metric_card('API Mode', 'Read-only')}"
+        f"{_metric_card('Trading', 'Disabled by policy')}"
+        f"{_metric_card('Withdrawals', 'Forbidden')}"
+        f"{_metric_card('Futures / Margin', 'Forbidden')}"
+        f"{_metric_card('Last Snapshot', _format_account_time(snapshot.fetched_at_ms))}"
         f"{_metric_card('Account Type', snapshot.account_type)}"
-        f"{_metric_card('Can Trade', str(snapshot.can_trade))}"
-        f"{_metric_card('Can Withdraw', str(snapshot.can_withdraw))}"
+        f"{_metric_card('Binance canTrade Flag', str(snapshot.can_trade))}"
+        f"{_metric_card('Binance canWithdraw Flag', str(snapshot.can_withdraw))}"
         f"{_metric_card('Permissions', ', '.join(snapshot.permissions) if snapshot.permissions else 'None')}"
         "</section>"
-        "<p class=\"muted\">Read-only account endpoint only: GET /api/v3/account. No order endpoints are used.</p>"
+        "<p class=\"muted\">Read-only account endpoint only: GET /api/v3/account. No order endpoints are used. Binance capability flags are displayed for awareness only and do not override project policy.</p>"
         f"{_render_account_balances(snapshot)}"
         "</section>"
     )
 
 
-def _render_account_safety_warning(snapshot: AccountSnapshot) -> str:
+def _render_account_policy_panel(snapshot: AccountSnapshot) -> str:
     warnings = []
     if snapshot.can_trade:
-        warnings.append("Binance reports canTrade=true. Disable trading permission for this read-only phase.")
+        warnings.append(
+            "Binance reports canTrade=true. Treat this as an account capability flag; CoinPilot trading remains disabled."
+        )
     if snapshot.can_withdraw:
-        warnings.append("Binance reports canWithdraw=true. Withdrawal permission must be disabled.")
-    if not warnings:
-        return "<p class=\"status-good\">Account API appears read-only from reported permissions.</p>"
-    items = "".join(f"<li>{escape(item)}</li>" for item in warnings)
-    return f"<div class=\"panel\" style=\"margin-bottom:14px;\"><strong class=\"negative\">Safety warning</strong><ul>{items}</ul></div>"
+        warnings.append(
+            "Binance reports canWithdraw=true. Withdrawal permission is forbidden by project policy and must not be enabled on any API key."
+        )
+    warning_html = ""
+    if warnings:
+        items = "".join(f"<li>{escape(item)}</li>" for item in warnings)
+        warning_html = f"<ul>{items}</ul>"
+    else:
+        warning_html = "<p class=\"status-good\">No trading or withdrawal capability flags were reported.</p>"
+    return (
+        "<div class=\"panel\" style=\"margin-bottom:14px;\">"
+        "<strong>Project Safety Policy</strong>"
+        "<ul>"
+        "<li>API mode: read-only account visibility.</li>"
+        "<li>Trading: disabled unless Michael uses the exact required approval phrase.</li>"
+        "<li>Withdrawals, futures, margin, leverage, and borrowing: forbidden.</li>"
+        "<li>Secrets are read from environment variables only and are never displayed.</li>"
+        "</ul>"
+        f"{warning_html}"
+        "</div>"
+    )
 
 
 def _render_account_balances(snapshot: AccountSnapshot) -> str:
@@ -1297,11 +1320,18 @@ def _render_account_balances(snapshot: AccountSnapshot) -> str:
         for balance in snapshot.balances
     )
     return (
+        "<h3>Non-zero Balances</h3>"
         "<table>"
         "<thead><tr><th>Asset</th><th>Free</th><th>Locked</th><th>Total</th></tr></thead>"
         f"<tbody>{rows}</tbody>"
         "</table>"
     )
+
+
+def _format_account_time(timestamp_ms: int | None) -> str:
+    if timestamp_ms is None:
+        return "Unavailable"
+    return datetime.fromtimestamp(timestamp_ms / 1000, PHILIPPINE_TIMEZONE).isoformat()
 
 
 def _render_signal_guides(series_list: tuple[ChartSeries, ...]) -> str:

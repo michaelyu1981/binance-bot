@@ -48,6 +48,7 @@ class AccountSnapshot:
     can_trade: bool
     can_withdraw: bool
     can_deposit: bool
+    fetched_at_ms: int
     update_time_ms: int | None
     permissions: tuple[str, ...]
     balances: tuple[AccountBalance, ...]
@@ -162,6 +163,7 @@ def _parse_account_snapshot(data: dict[str, object]) -> AccountSnapshot:
         can_trade=bool(data.get("canTrade", False)),
         can_withdraw=bool(data.get("canWithdraw", False)),
         can_deposit=bool(data.get("canDeposit", False)),
+        fetched_at_ms=int(time.time() * 1000),
         update_time_ms=_optional_int(data.get("updateTime")),
         permissions=tuple(item for item in permissions if isinstance(item, str)),
         balances=tuple(sorted(balances, key=lambda balance: balance.asset)),
