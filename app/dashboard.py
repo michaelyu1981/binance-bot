@@ -19,11 +19,13 @@ from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from app.binance_account import (
+    AccountBalance,
     AccountSnapshot,
     BinanceAccountError,
     fetch_account_snapshot,
     load_binance_account_config_from_env,
 )
+from app.binance_reader import BinancePublicMarketError, fetch_public_prices
 from app.candle_store import DEFAULT_CANDLE_DB_PATH
 from app.config import PUBLIC_MARKET_WATCHLIST
 from app.advisory import (
@@ -110,6 +112,21 @@ class LogCoverage:
     latest_time: str
     duration: str
     price_cycles: int
+
+
+@dataclass(frozen=True)
+class PortfolioBalanceValuation:
+    balance: AccountBalance
+    price_usdt: Decimal | None
+    value_usdt: Decimal | None
+    allocation_percent: Decimal | None
+    pricing_note: str
+
+
+@dataclass(frozen=True)
+class PortfolioValuation:
+    total_usdt: Decimal
+    rows: tuple[PortfolioBalanceValuation, ...]
 
 
 @dataclass(frozen=True)
@@ -1271,6 +1288,7 @@ def _render_account_snapshot_panel() -> str:
         "</section>"
         "<p class=\"muted\">Read-only account endpoint only: GET /api/v3/account. No order endpoints are used. Binance capability flags are displayed for awareness only and do not override project policy.</p>"
         f"{_render_account_balances(snapshot)}"
+        f"{_render_portfolio_valuation(snapshot)}"
         "</section>"
     )
 
@@ -1326,6 +1344,118 @@ def _render_account_balances(snapshot: AccountSnapshot) -> str:
         f"<tbody>{rows}</tbody>"
         "</table>"
     )
+
+
+def _render_portfolio_valuation(snapshot: AccountSnapshot) -> str:
+    valuation = _build_portfolio_valuation(snapshot)
+    priced_count = sum(1 for row in valuation.rows if row.value_usdt is not None)
+    unpriced_count = len(valuation.rows) - priced_count
+    rows = "".join(_render_portfolio_valuation_row(row) for row in valuation.rows)
+    if not rows:
+        rows = "<tr><td colspan=\"6\" class=\"muted\">No non-zero balances to value.</td></tr>"
+    return (
+        "<h3>Estimated Portfolio Value</h3>"
+        "<section class=\"grid\">"
+        f"{_metric_card('Total Estimated Value', _format_usdt_value(valuation.total_usdt))}"
+        f"{_metric_card('Priced Assets', str(priced_count))}"
+        f"{_metric_card('Unpriced Assets', str(unpriced_count))}"
+        "</section>"
+        "<p class=\"muted\">Valuation uses public Binance spot prices only. It is an estimate, not an order quote, and it does not use trading endpoints.</p>"
+        "<table>"
+        "<thead><tr><th>Asset</th><th>Total</th><th>Public Price</th><th>Estimated Value</th><th>Allocation</th><th>Status</th></tr></thead>"
+        f"<tbody>{rows}</tbody>"
+        "</table>"
+    )
+
+
+def _render_portfolio_valuation_row(row: PortfolioBalanceValuation) -> str:
+    return (
+        "<tr>"
+        f"<td>{escape(row.balance.asset)}</td>"
+        f"<td>{escape(str(row.balance.total))}</td>"
+        f"<td>{escape(_format_optional_usdt_price(row.price_usdt))}</td>"
+        f"<td>{escape(_format_optional_usdt_value(row.value_usdt))}</td>"
+        f"<td>{escape(_format_optional_percent(row.allocation_percent))}</td>"
+        f"<td>{escape(row.pricing_note)}</td>"
+        "</tr>"
+    )
+
+
+def _build_portfolio_valuation(snapshot: AccountSnapshot) -> PortfolioValuation:
+    rows = [_value_balance(balance) for balance in snapshot.balances]
+    total_usdt = sum(
+        (row.value_usdt for row in rows if row.value_usdt is not None),
+        Decimal("0"),
+    )
+    if total_usdt > 0:
+        rows = [
+            PortfolioBalanceValuation(
+                balance=row.balance,
+                price_usdt=row.price_usdt,
+                value_usdt=row.value_usdt,
+                allocation_percent=(row.value_usdt / total_usdt) * Decimal("100")
+                if row.value_usdt is not None
+                else None,
+                pricing_note=row.pricing_note,
+            )
+            for row in rows
+        ]
+    rows.sort(
+        key=lambda row: (
+            row.value_usdt is None,
+            -(row.value_usdt or Decimal("0")),
+            row.balance.asset,
+        )
+    )
+    return PortfolioValuation(total_usdt=total_usdt, rows=tuple(rows))
+
+
+def _value_balance(balance: AccountBalance) -> PortfolioBalanceValuation:
+    price_usdt, note = _price_asset_in_usdt(balance.asset)
+    value_usdt = balance.total * price_usdt if price_usdt is not None else None
+    return PortfolioBalanceValuation(
+        balance=balance,
+        price_usdt=price_usdt,
+        value_usdt=value_usdt,
+        allocation_percent=None,
+        pricing_note=note,
+    )
+
+
+def _price_asset_in_usdt(asset: str) -> tuple[Decimal | None, str]:
+    normalized_asset = asset.strip().upper()
+    if normalized_asset == "USDT":
+        return Decimal("1"), "USDT cash balance"
+    symbol = f"{normalized_asset}USDT"
+    try:
+        price = fetch_public_prices((symbol,), timeout_seconds=5.0)[0].price
+    except (BinancePublicMarketError, ValueError, IndexError):
+        return None, f"No public {symbol} price"
+    return price, f"Public {symbol} ticker"
+
+
+def _format_usdt_value(value: Decimal) -> str:
+    return f"{value:,.2f} USDT"
+
+
+def _format_optional_usdt_value(value: Decimal | None) -> str:
+    if value is None:
+        return "Unavailable"
+    return _format_usdt_value(value)
+
+
+def _format_optional_usdt_price(value: Decimal | None) -> str:
+    if value is None:
+        return "Unavailable"
+    if value >= Decimal("1"):
+        return f"{value:,.2f} USDT"
+    return f"{value:,.8f} USDT"
+
+
+def _format_optional_percent(value: Decimal | None) -> str:
+    if value is None:
+        return "Unavailable"
+    return f"{value:.2f}%"
 
 
 def _format_account_time(timestamp_ms: int | None) -> str:
