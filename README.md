@@ -228,6 +228,17 @@ advisory only. They do not place orders, size trades, access Binance order
 endpoints, or enable automatic trading. A run label can be entered on the page
 for display only; it is not saved and does not change the algorithm logic.
 
+Included deterministic algorithm summaries:
+
+- CoinPilot Trend Guard v1
+- CoinPilot Breakout Scout v1
+- CoinPilot Reclaim v1
+- CoinPilot No-Martingale Guard v1
+- CoinPilot Grid Accumulation Scalper: dry-run 20% / 30% / 50% tier model with
+  simulated full exit at average entry x 1.008.
+- CoinPilot Gear Shifting Algo: dry-run 3-gear hybrid model for volatility
+  snap-back, momentum trailing, and defensive grid state transitions.
+
 Dashboard login is optional and controlled only through environment variables:
 
 ```bash
