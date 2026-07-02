@@ -1,8 +1,33 @@
-# DigitalOcean Deployment Plan
+# DigitalOcean Deployment
 
-This plan deploys the current CoinPilot public market monitor to a separate
-DigitalOcean Droplet. It is documentation/setup only until Michael explicitly
-chooses to deploy.
+This document describes the current CoinPilot deployment on the Hermes
+DigitalOcean Droplet and the safe operating commands for the read-only public
+market monitor.
+
+## Current Production Snapshot
+
+- Droplet name: Hermes.
+- Public IPv4: `68.183.225.86`.
+- Private IPv4: `10.15.0.6`.
+- App directory: `/opt/coinpilot`.
+- Public URL: `https://coinpilot.mindforgecloud.com/login`.
+- Nginx public front door: ports `80` and `443`.
+- Dashboard internal bind: `127.0.0.1:8765`.
+- HTTPS: Let's Encrypt via Certbot.
+- Certificate renewal: `certbot.timer`.
+
+Docker services:
+
+- `coinpilot-binance-bot-1`: public price monitor.
+- `coinpilot-binance-candles-1`: public candle collector.
+- `coinpilot-binance-dashboard-1`: read-only dashboard.
+
+The dashboard must remain password protected on Hermes through `.env`:
+
+```bash
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=replace-with-a-private-password
+```
 
 ## Current Scope
 
@@ -56,8 +81,9 @@ This Droplet is for public monitoring only. Do not reuse it for unrelated apps.
 Inbound:
 
 - Allow SSH on port `22` only from Michael's current public IP if possible.
-- No public HTTP port is needed yet.
-- No dashboard port is needed yet.
+- Allow HTTP on port `80` for Let's Encrypt validation and redirect to HTTPS.
+- Allow HTTPS on port `443` for the dashboard.
+- Do not expose port `8765` publicly.
 
 Outbound:
 
@@ -68,8 +94,8 @@ Notes:
 
 - DigitalOcean Cloud Firewall is separate from Droplet firewall software such as
   UFW. Keep rules consistent if both are used.
-- When a future dashboard exists, expose it only after authentication and
-  firewall rules are designed.
+- The dashboard app must stay bound to `127.0.0.1`. Nginx is the only public
+  HTTP/HTTPS entry point.
 
 ## Secrets
 
@@ -78,6 +104,8 @@ Allowed on the Droplet `.env`:
 ```bash
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+DASHBOARD_USERNAME=
+DASHBOARD_PASSWORD=
 ```
 
 Forbidden on the Droplet for this phase:
@@ -105,7 +133,9 @@ On DigitalOcean:
 - [ ] Use SSH key authentication.
 - [ ] Add a Cloud Firewall.
 - [ ] Restrict inbound SSH as tightly as possible.
-- [ ] Do not open HTTP/HTTPS inbound yet.
+- [ ] Open HTTP `80` for Let's Encrypt validation and HTTPS redirect.
+- [ ] Open HTTPS `443` for the public dashboard.
+- [ ] Do not open dashboard port `8765`.
 
 On the Droplet:
 
@@ -113,8 +143,9 @@ On the Droplet:
 - [ ] Install Docker Engine and Docker Compose plugin.
 - [ ] Create a dedicated app directory, for example `/opt/coinpilot`.
 - [ ] Clone or copy this repository.
-- [ ] Create `.env` manually with Telegram variables only.
+- [ ] Create `.env` manually with Telegram and dashboard variables only.
 - [ ] Confirm `.env` permissions are restrictive.
+- [ ] Confirm `DASHBOARD_PASSWORD` is set before exposing Nginx publicly.
 - [ ] Build Docker image.
 - [ ] Start Docker Compose service.
 - [ ] Confirm logs are writing.
@@ -122,7 +153,8 @@ On the Droplet:
 
 ## Deployment Commands
 
-These commands are a draft runbook. Review before executing on the Droplet.
+These commands are the deployment runbook. Review before executing on the
+Droplet.
 
 ```bash
 sudo apt update
@@ -158,14 +190,15 @@ nano .env
 chmod 600 .env
 ```
 
-For this phase, `.env` should contain Telegram variables only. Leave Binance
-account API fields empty.
+For this phase, `.env` should contain Telegram and dashboard variables only.
+Leave Binance account API fields empty.
 
 Build and start:
 
 ```bash
 docker compose build
 docker compose up -d
+docker compose --profile dashboard up -d binance-dashboard
 ```
 
 Inspect:
@@ -188,48 +221,126 @@ docker compose run --rm binance-bot python3 -m app.main --summary --summary-hour
 Check service:
 
 ```bash
+cd /opt/coinpilot
 docker compose ps
 ```
 
 Follow logs:
 
 ```bash
+cd /opt/coinpilot
 docker compose logs -f binance-bot
 ```
 
 Run summary:
 
 ```bash
+cd /opt/coinpilot
 docker compose run --rm binance-bot python3 -m app.main --summary --summary-hours 24
 ```
 
 Stop service:
 
 ```bash
+cd /opt/coinpilot
 docker compose down
 ```
 
 Restart service:
 
 ```bash
+cd /opt/coinpilot
 docker compose up -d
+docker compose --profile dashboard up -d binance-dashboard
 ```
 
 Update code:
 
 ```bash
+cd /opt/coinpilot
 git pull
 docker compose build
 docker compose up -d
+docker compose --profile dashboard up -d binance-dashboard
+```
+
+Restart only the dashboard after dashboard code or `.env` auth changes:
+
+```bash
+cd /opt/coinpilot
+docker compose --profile dashboard up -d --build --no-deps binance-dashboard
+```
+
+Restart only the public price monitor:
+
+```bash
+cd /opt/coinpilot
+docker compose up -d --build --no-deps binance-bot
+```
+
+Restart only the public candle collector:
+
+```bash
+cd /opt/coinpilot
+docker compose up -d --build --no-deps binance-candles
+```
+
+## Nginx And HTTPS
+
+Nginx proxies public HTTPS traffic to the private dashboard process:
+
+```text
+https://coinpilot.mindforgecloud.com -> http://127.0.0.1:8765
+```
+
+Important files on Hermes:
+
+```text
+/etc/nginx/sites-available/coinpilot
+/etc/nginx/sites-enabled/coinpilot
+/etc/letsencrypt/live/coinpilot.mindforgecloud.com/fullchain.pem
+/etc/letsencrypt/live/coinpilot.mindforgecloud.com/privkey.pem
+```
+
+Check Nginx:
+
+```bash
+nginx -t
+systemctl is-active nginx
+systemctl reload nginx
+```
+
+Check HTTPS from any machine:
+
+```bash
+curl -I https://coinpilot.mindforgecloud.com/login
+curl -I http://coinpilot.mindforgecloud.com
+```
+
+Expected:
+
+- HTTPS login returns `200`.
+- HTTP returns `301` redirecting to HTTPS.
+
+Check Certbot renewal timer:
+
+```bash
+systemctl list-timers certbot.timer --no-pager
+certbot renew --dry-run
 ```
 
 ## Monitoring Checks
 
 After deployment:
 
-- [ ] Confirm one log cycle per minute.
+- [ ] Confirm one public price cycle per configured interval.
+- [ ] Confirm one public candle collection cycle per configured interval.
 - [ ] Confirm `logs/market_prices-YYYY-MM-DD.log` persists after container restart.
+- [ ] Confirm `data/market_data.sqlite3` persists after container restart.
 - [ ] Confirm summary works.
+- [ ] Confirm dashboard login is required.
+- [ ] Confirm `https://coinpilot.mindforgecloud.com/login` works.
+- [ ] Confirm `http://coinpilot.mindforgecloud.com` redirects to HTTPS.
 - [ ] Confirm Telegram alerts only fire on threshold alerts.
 - [ ] Confirm no secrets appear in Docker logs.
 - [ ] Confirm no Binance account API variables are populated.
@@ -240,12 +351,14 @@ After deployment:
 If anything behaves unexpectedly:
 
 ```bash
+cd /opt/coinpilot
 docker compose down
 ```
 
 Then inspect:
 
 ```bash
+cd /opt/coinpilot
 docker compose logs --tail=200 binance-bot
 tail -n 200 logs/market_prices-$(date +%F).log
 ```

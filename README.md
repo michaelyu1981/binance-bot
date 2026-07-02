@@ -24,6 +24,12 @@ No withdrawals.
 - Telegram alerts
 - Freqtrade dry-run later
 
+## Production docs
+
+- Hermes deployment: `docs/digitalocean-deployment.md`
+- Production hardening: `docs/production-hardening-checklist.md`
+- Backup and restore: `docs/backup-and-restore.md`
+
 ## Project phases
 
 1. Public Binance market reader
