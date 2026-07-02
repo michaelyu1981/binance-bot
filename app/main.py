@@ -6,6 +6,12 @@ import argparse
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 
+from app.binance_account import (
+    BinanceAccountError,
+    fetch_account_snapshot,
+    format_account_snapshot,
+    load_binance_account_config_from_env,
+)
 from app.candle_collector import (
     DEFAULT_CANDLE_FETCH_LIMIT,
     run_candle_collection_once,
@@ -59,6 +65,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--summary",
         action="store_true",
         help="Build a summary from local market price logs without fetching Binance data.",
+    )
+    parser.add_argument(
+        "--account-summary",
+        action="store_true",
+        help="Fetch a read-only Binance Spot account balance snapshot.",
     )
     parser.add_argument(
         "--summary-hours",
@@ -162,6 +173,24 @@ def run_summary(summary_hours: int, *, send_telegram: bool) -> int:
     return 0
 
 
+def run_account_summary() -> int:
+    """Fetch and print a read-only Binance Spot account snapshot."""
+
+    config = load_binance_account_config_from_env()
+    if config is None:
+        print("Error: BINANCE_API_KEY and BINANCE_API_SECRET must be set in .env.")
+        return 1
+
+    try:
+        snapshot = fetch_account_snapshot(config=config)
+    except BinanceAccountError as exc:
+        print(f"Binance account summary failed: {exc}")
+        return 1
+
+    print(format_account_snapshot(snapshot))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the read-only public market monitor."""
 
@@ -181,6 +210,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(format_candle_store_stats(stats))
         return 0
+
+    if args.account_summary:
+        return run_account_summary()
 
     if args.watch_signals:
         send_telegram = not args.no_signal_telegram

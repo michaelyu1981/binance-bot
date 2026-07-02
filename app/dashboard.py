@@ -18,6 +18,12 @@ import time
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from app.binance_account import (
+    AccountSnapshot,
+    BinanceAccountError,
+    fetch_account_snapshot,
+    load_binance_account_config_from_env,
+)
 from app.candle_store import DEFAULT_CANDLE_DB_PATH
 from app.config import PUBLIC_MARKET_WATCHLIST
 from app.advisory import (
@@ -170,7 +176,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                     include_body=include_body,
                 )
                 return
-            if parsed_url.path not in ("/", "/index.html", "/charts", "/advisory"):
+            if parsed_url.path not in ("/", "/index.html", "/charts", "/advisory", "/account"):
                 self.send_error(404, "Not found")
                 return
 
@@ -186,6 +192,8 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 symbol = _parse_advisory_symbol(query.get("symbol", [PUBLIC_MARKET_WATCHLIST[0]])[0])
                 advisor = query.get("advisor", ["all"])[0]
                 body = render_advisory_view(symbol=symbol, advisor=advisor)
+            elif parsed_url.path == "/account":
+                body = render_account_view()
             else:
                 summary_hours = _parse_summary_hours(query.get("hours", ["24"])[0])
                 summary = build_market_summary(summary_hours=summary_hours)
@@ -596,6 +604,32 @@ def render_chart_view(*, interval: str) -> str:
 """
 
 
+def render_account_view() -> str:
+    """Render read-only Binance account snapshot page."""
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
+  <title>CoinPilot Account</title>
+  <style>{_shared_page_css()}</style>
+</head>
+<body>
+  <header>
+    <h1>CoinPilot Account</h1>
+    <div class="muted">Read-only Binance Spot account snapshot. No buy/sell. No order endpoints. No withdrawals.</div>
+  </header>
+  {_render_nav("account")}
+  <main>
+    {_render_account_snapshot_panel()}
+  </main>
+</body>
+</html>
+"""
+
+
 def render_advisory_view(*, symbol: str, advisor: str) -> str:
     """Render modular advisory-board commentary from deterministic signals."""
 
@@ -890,6 +924,7 @@ def _render_nav(active: str) -> str:
         f"<a class=\"{'active' if active == 'dashboard' else ''}\" href=\"/\">Dashboard Main</a>"
         f"<a class=\"{'active' if active == 'charts' else ''}\" href=\"/charts\">Chart View</a>"
         f"<a class=\"{'active' if active == 'advisory' else ''}\" href=\"/advisory\">Advisory</a>"
+        f"<a class=\"{'active' if active == 'account' else ''}\" href=\"/account\">Account</a>"
         "</div>"
         f"<div class=\"nav\">{logout_link}</div>"
         "</nav>"
@@ -1194,6 +1229,78 @@ def _render_advisory_opinion(opinion: AdvisoryOpinion) -> str:
         f"<p>{escape(opinion.outlook)}</p>"
         "<p class=\"muted\">Safety: advisory only; no orders; public data only.</p>"
         "</article>"
+    )
+
+
+def _render_account_snapshot_panel() -> str:
+    config = load_binance_account_config_from_env()
+    if config is None:
+        return (
+            "<section class=\"panel\">"
+            "<h2>Account Snapshot</h2>"
+            "<p class=\"muted\">BINANCE_API_KEY and BINANCE_API_SECRET are not configured.</p>"
+            "<p>Safety: add read-only credentials only in .env. Do not enable trading or withdrawals.</p>"
+            "</section>"
+        )
+
+    try:
+        snapshot = fetch_account_snapshot(config=config)
+    except BinanceAccountError as exc:
+        return (
+            "<section class=\"panel\">"
+            "<h2>Account Snapshot</h2>"
+            f"<p class=\"negative\">Could not fetch account snapshot: {escape(str(exc))}</p>"
+            "<p class=\"muted\">No secret values are displayed or logged by this dashboard.</p>"
+            "</section>"
+        )
+
+    return (
+        "<section class=\"panel\" style=\"margin-bottom:18px;\">"
+        "<h2>Account Snapshot</h2>"
+        f"{_render_account_safety_warning(snapshot)}"
+        "<section class=\"grid\">"
+        f"{_metric_card('Account Type', snapshot.account_type)}"
+        f"{_metric_card('Can Trade', str(snapshot.can_trade))}"
+        f"{_metric_card('Can Withdraw', str(snapshot.can_withdraw))}"
+        f"{_metric_card('Permissions', ', '.join(snapshot.permissions) if snapshot.permissions else 'None')}"
+        "</section>"
+        "<p class=\"muted\">Read-only account endpoint only: GET /api/v3/account. No order endpoints are used.</p>"
+        f"{_render_account_balances(snapshot)}"
+        "</section>"
+    )
+
+
+def _render_account_safety_warning(snapshot: AccountSnapshot) -> str:
+    warnings = []
+    if snapshot.can_trade:
+        warnings.append("Binance reports canTrade=true. Disable trading permission for this read-only phase.")
+    if snapshot.can_withdraw:
+        warnings.append("Binance reports canWithdraw=true. Withdrawal permission must be disabled.")
+    if not warnings:
+        return "<p class=\"status-good\">Account API appears read-only from reported permissions.</p>"
+    items = "".join(f"<li>{escape(item)}</li>" for item in warnings)
+    return f"<div class=\"panel\" style=\"margin-bottom:14px;\"><strong class=\"negative\">Safety warning</strong><ul>{items}</ul></div>"
+
+
+def _render_account_balances(snapshot: AccountSnapshot) -> str:
+    if not snapshot.balances:
+        return "<p class=\"muted\">No non-zero balances returned.</p>"
+    rows = "".join(
+        (
+            "<tr>"
+            f"<td>{escape(balance.asset)}</td>"
+            f"<td>{escape(str(balance.free))}</td>"
+            f"<td>{escape(str(balance.locked))}</td>"
+            f"<td>{escape(str(balance.total))}</td>"
+            "</tr>"
+        )
+        for balance in snapshot.balances
+    )
+    return (
+        "<table>"
+        "<thead><tr><th>Asset</th><th>Free</th><th>Locked</th><th>Total</th></tr></thead>"
+        f"<tbody>{rows}</tbody>"
+        "</table>"
     )
 
 

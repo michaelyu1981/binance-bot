@@ -110,6 +110,16 @@ Send the summary to Telegram when Telegram env vars are configured:
 python3 -m app.main --summary --send-telegram
 ```
 
+Fetch a read-only Binance Spot account balance snapshot:
+
+```bash
+python3 -m app.main --account-summary
+```
+
+This requires `BINANCE_API_KEY` and `BINANCE_API_SECRET` in `.env`. The key must
+be read-only. Do not enable trading, withdrawals, futures, margin, leverage, or
+transfers.
+
 Run a local read-only dashboard:
 
 ```bash
@@ -188,6 +198,8 @@ Dashboard navigation includes:
 
 - Dashboard Main
 - Chart View
+- Advisory
+- Account
 
 Chart View reads local SQLite candles from:
 
