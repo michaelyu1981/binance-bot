@@ -20,6 +20,12 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from app.candle_store import DEFAULT_CANDLE_DB_PATH
 from app.config import PUBLIC_MARKET_WATCHLIST
+from app.advisory import (
+    ADVISORY_BOTS,
+    AdvisoryOpinion,
+    build_advisory_opinions,
+    build_consensus_summary,
+)
 from app.health import (
     CANDLE_COLLECTOR_HEALTH_PATH,
     PRICE_MONITOR_HEALTH_PATH,
@@ -164,7 +170,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                     include_body=include_body,
                 )
                 return
-            if parsed_url.path not in ("/", "/index.html", "/charts"):
+            if parsed_url.path not in ("/", "/index.html", "/charts", "/advisory"):
                 self.send_error(404, "Not found")
                 return
 
@@ -176,6 +182,10 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/charts":
                 interval = _parse_chart_interval(query.get("interval", [DEFAULT_CHART_INTERVAL])[0])
                 body = render_chart_view(interval=interval)
+            elif parsed_url.path == "/advisory":
+                symbol = _parse_advisory_symbol(query.get("symbol", [PUBLIC_MARKET_WATCHLIST[0]])[0])
+                advisor = query.get("advisor", ["all"])[0]
+                body = render_advisory_view(symbol=symbol, advisor=advisor)
             else:
                 summary_hours = _parse_summary_hours(query.get("hours", ["24"])[0])
                 summary = build_market_summary(summary_hours=summary_hours)
@@ -586,6 +596,52 @@ def render_chart_view(*, interval: str) -> str:
 """
 
 
+def render_advisory_view(*, symbol: str, advisor: str) -> str:
+    """Render modular advisory-board commentary from deterministic signals."""
+
+    symbol_options = "".join(
+        f"<a class=\"{'active' if item == symbol else ''}\" href=\"/advisory?{urlencode({'symbol': item, 'advisor': advisor})}\">{escape(item)}</a>"
+        for item in PUBLIC_MARKET_WATCHLIST
+    )
+    advisor_options = (
+        f"<a class=\"{'active' if advisor == 'all' else ''}\" href=\"/advisory?{urlencode({'symbol': symbol, 'advisor': 'all'})}\">All Advisors</a>"
+        + "".join(
+            f"<a class=\"{'active' if bot.slug == advisor else ''}\" href=\"/advisory?{urlencode({'symbol': symbol, 'advisor': bot.slug})}\">{escape(bot.name)}</a>"
+            for bot in ADVISORY_BOTS
+        )
+    )
+    body = _render_advisory_body(symbol=symbol, advisor=advisor)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
+  <title>CoinPilot Advisory</title>
+  <style>{_shared_page_css()}</style>
+</head>
+<body>
+  <header>
+    <h1>CoinPilot Advisory</h1>
+    <div class="muted">Template-based advisory board from deterministic public-market signals. No AI calls. No account access. No orders.</div>
+  </header>
+  {_render_nav("advisory")}
+  <main>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Coin</h2>
+      <div class="nav">{symbol_options}</div>
+    </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Advisor</h2>
+      <div class="nav">{advisor_options}</div>
+    </section>
+    {body}
+  </main>
+</body>
+</html>
+"""
+
+
 def render_login_page(*, message: str) -> str:
     """Render dashboard login page."""
 
@@ -717,6 +773,14 @@ def _shared_page_css() -> str:
     .signal-detail h3 { font-size: 14px; margin: 0 0 6px; }
     .signal-detail ul { margin: 0; padding-left: 18px; }
     .signal-detail li { margin: 3px 0; }
+    .advisory-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .advisory-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfe;
+    }
+    .advisory-card h3 { margin: 0 0 6px; font-size: 15px; }
     .sparkline {
       width: 100%;
       height: 260px;
@@ -813,6 +877,7 @@ def _shared_page_css() -> str:
     @media (max-width: 760px) {
       main, header, .topbar { padding: 16px; }
       .signal-head, .signal-detail-grid { grid-template-columns: 1fr; }
+      .advisory-grid { grid-template-columns: 1fr; }
     }
     """
 
@@ -824,6 +889,7 @@ def _render_nav(active: str) -> str:
         "<div class=\"nav\">"
         f"<a class=\"{'active' if active == 'dashboard' else ''}\" href=\"/\">Dashboard Main</a>"
         f"<a class=\"{'active' if active == 'charts' else ''}\" href=\"/charts\">Chart View</a>"
+        f"<a class=\"{'active' if active == 'advisory' else ''}\" href=\"/advisory\">Advisory</a>"
         "</div>"
         f"<div class=\"nav\">{logout_link}</div>"
         "</nav>"
@@ -1068,6 +1134,66 @@ def _render_multi_timeframe_summary_row(summary: MultiTimeframeSignalSummary) ->
         f"<td>{escape(timeframe_text)}</td>"
         f"<td>{escape(summary.final_decision)}</td>"
         "</tr>"
+    )
+
+
+def _render_advisory_body(*, symbol: str, advisor: str) -> str:
+    interval_series = _load_multi_timeframe_series().get(symbol, {})
+    guides_by_interval = {
+        interval: guide
+        for interval, series in interval_series.items()
+        if (guide := _build_signal_guide(series)) is not None
+    }
+    if not guides_by_interval:
+        return (
+            "<section class=\"panel\">"
+            f"<h2>{escape(symbol)}</h2>"
+            "<p class=\"muted\">No multi-timeframe candle data found yet.</p>"
+            "</section>"
+        )
+
+    summary = build_multi_timeframe_signal_summary(
+        symbol=symbol,
+        guides_by_interval=guides_by_interval,
+    )
+    opinions = build_advisory_opinions(
+        summary=summary,
+        guides_by_interval=guides_by_interval,
+    )
+    if advisor != "all":
+        opinions = tuple(opinion for opinion in opinions if opinion.bot.slug == advisor)
+    if not opinions:
+        opinions = build_advisory_opinions(
+            summary=summary,
+            guides_by_interval=guides_by_interval,
+        )
+
+    return (
+        "<section class=\"panel\" style=\"margin-bottom:18px;\">"
+        f"<h2>{escape(symbol)} Advisory Summary</h2>"
+        f"<p><strong>Overall:</strong> {escape(summary.overall)} | "
+        f"<strong>Bias:</strong> {escape(summary.bias)} | "
+        f"<strong>Score:</strong> {summary.score}/100 | "
+        f"<strong>Alignment:</strong> {escape(summary.alignment)}</p>"
+        f"<p><strong>Consensus:</strong> {escape(build_consensus_summary(opinions))}</p>"
+        "<p class=\"muted\">These are fixed-template advisor lenses from public candle signals. They are not AI-generated and cannot trade.</p>"
+        "</section>"
+        "<section class=\"advisory-grid\">"
+        f"{''.join(_render_advisory_opinion(opinion) for opinion in opinions)}"
+        "</section>"
+    )
+
+
+def _render_advisory_opinion(opinion: AdvisoryOpinion) -> str:
+    return (
+        "<article class=\"advisory-card\">"
+        f"<h3>{escape(opinion.bot.name)}</h3>"
+        f"<p class=\"muted\">{escape(opinion.bot.lens)}</p>"
+        f"<p><strong>Verdict:</strong> {escape(opinion.verdict)} | "
+        f"<strong>Confidence:</strong> {opinion.confidence}/100</p>"
+        f"<p>{escape(opinion.outlook)}</p>"
+        "<p class=\"muted\">Safety: advisory only; no orders; public data only.</p>"
+        "</article>"
     )
 
 
@@ -2336,3 +2462,9 @@ def _parse_chart_interval(value: str) -> str:
     if value in CHART_INTERVALS:
         return value
     return DEFAULT_CHART_INTERVAL
+
+
+def _parse_advisory_symbol(value: str) -> str:
+    if value in PUBLIC_MARKET_WATCHLIST:
+        return value
+    return PUBLIC_MARKET_WATCHLIST[0]
