@@ -49,6 +49,11 @@ from app.indicators import (
     describe_rsi,
     describe_volume,
 )
+from app.signals import (
+    ScoreBreakdown,
+    TechnicalSignalGuide,
+    build_technical_signal_guide,
+)
 
 
 DEFAULT_DASHBOARD_HOST = "127.0.0.1"
@@ -545,6 +550,11 @@ def render_chart_view(*, interval: str) -> str:
       <p class="muted">Advisory only. Calculated from local public candles; no API key, no account access, no orders.</p>
       {_render_indicator_table(series_list)}
     </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Technical Signal Guide</h2>
+      <p class="muted">Rule-based advisory only. No AI, no prediction model, no account access, no orders.</p>
+      {_render_signal_guides(series_list)}
+    </section>
     <section class="chart-grid">
       {chart_sections}
     </section>
@@ -657,6 +667,35 @@ def _shared_page_css() -> str:
       background: #fbfcfe;
     }
     .chart-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+    .signal-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    .signal-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfe;
+    }
+    .signal-head {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .signal-metric {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      background: var(--panel);
+    }
+    .signal-label { color: var(--muted); font-size: 12px; }
+    .signal-value { font-weight: 700; overflow-wrap: anywhere; }
+    .signal-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .signal-detail h3 { font-size: 14px; margin: 0 0 6px; }
+    .signal-detail ul { margin: 0; padding-left: 18px; }
+    .signal-detail li { margin: 3px 0; }
     .sparkline {
       width: 100%;
       height: 260px;
@@ -751,6 +790,7 @@ def _shared_page_css() -> str:
     }
     @media (max-width: 760px) {
       main, header, .topbar { padding: 16px; }
+      .signal-head, .signal-detail-grid { grid-template-columns: 1fr; }
     }
     """
 
@@ -892,6 +932,174 @@ def _render_indicator_table(series_list: tuple[ChartSeries, ...]) -> str:
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
+    )
+
+
+def _render_signal_guides(series_list: tuple[ChartSeries, ...]) -> str:
+    guides = []
+    for series in series_list:
+        if not series.candles:
+            continue
+        highs = tuple(candle.high_price for candle in series.candles)
+        lows = tuple(candle.low_price for candle in series.candles)
+        closes = tuple(candle.close_price for candle in series.candles)
+        volumes = tuple(candle.volume for candle in series.candles)
+        snapshot = build_indicator_snapshot(
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            volumes=volumes,
+        )
+        guide = build_technical_signal_guide(
+            symbol=series.symbol,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            volumes=volumes,
+            snapshot=snapshot,
+        )
+        guides.append(_render_signal_guide(guide))
+
+    if not guides:
+        return "<p class=\"muted\">No candle data found yet. Run the public candle collector first.</p>"
+    return f"<div class=\"signal-grid\">{''.join(guides)}</div>"
+
+
+def _render_signal_guide(guide: TechnicalSignalGuide) -> str:
+    trend = _signal_detail(
+        "Trend",
+        (
+            ("Current Price", _format_optional_price(guide.current_price)),
+            ("SMA50", _format_optional_price(guide.sma50)),
+            ("EMA20", _format_optional_price(guide.ema20)),
+            ("Price vs SMA50", guide.price_vs_sma50),
+            ("Price vs EMA20", guide.price_vs_ema20),
+            ("Trend Status", guide.trend_status),
+            ("Distance from SMA50", _format_optional_percent(guide.distance_from_sma50_percent)),
+        ),
+    )
+    momentum = _signal_detail(
+        "Momentum",
+        (
+            ("RSI14", _format_optional_decimal(guide.rsi14)),
+            ("RSI Status", guide.rsi_status),
+            ("MACD", _format_optional_price(guide.macd)),
+            ("MACD Signal", _format_optional_price(guide.macd_signal)),
+            ("MACD Histogram", _format_optional_price(guide.macd_histogram)),
+            ("MACD Status", guide.macd_status),
+            ("Histogram Status", guide.macd_histogram_status),
+        ),
+    )
+    volatility = _signal_detail(
+        "Volatility",
+        (
+            ("ATR14", _format_optional_price(guide.atr14)),
+            ("ATR%", _format_optional_percent(guide.atr_percent)),
+            ("ATR Status", guide.atr_status),
+            ("Bollinger Band Width", _format_optional_percent(guide.bollinger_band_width_percent)),
+            ("Band Width Status", guide.bollinger_band_width_status),
+            ("Squeeze Risk", guide.bollinger_squeeze),
+        ),
+    )
+    bollinger = _signal_detail(
+        "Bollinger Status",
+        (
+            ("Upper Band", _format_optional_price(guide.bollinger_upper)),
+            ("Middle Band", _format_optional_price(guide.bollinger_middle)),
+            ("Lower Band", _format_optional_price(guide.bollinger_lower)),
+            ("Price Location", guide.bollinger_price_location),
+            ("Squeeze", guide.bollinger_squeeze),
+            ("Reversal Risk", guide.bollinger_reversal_risk),
+        ),
+    )
+    key_levels = _signal_detail(
+        "Key Levels",
+        (
+            ("Nearest Support", _format_optional_price(guide.nearest_support)),
+            ("Nearest Resistance", _format_optional_price(guide.nearest_resistance)),
+            ("Breakout Level", _format_optional_price(guide.breakout_level)),
+            ("Breakdown Level", _format_optional_price(guide.breakdown_level)),
+            ("Bullish Trigger", guide.bullish_trigger),
+            ("Bearish Trigger", guide.bearish_trigger),
+        ),
+    )
+    score_breakdown = _signal_detail(
+        "Score Breakdown",
+        _score_breakdown_items(guide.score_breakdown, guide.volume_vs_average_percent),
+    )
+    risk_guide = _signal_list(
+        "Risk Guide",
+        guide.risk_guide
+        + (
+            f"Conservative Stop Guide: {_format_optional_price(guide.conservative_stop_guide)}",
+            f"Wide Stop Guide: {_format_optional_price(guide.wide_stop_guide)}",
+            "Avoid trade if reward-to-risk is below 2:1.",
+        ),
+    )
+    return (
+        "<article class=\"signal-card\">"
+        f"<h3>{escape(guide.symbol)}</h3>"
+        "<div class=\"signal-head\">"
+        f"{_signal_metric('Signal', guide.signal)}"
+        f"{_signal_metric('Bias', guide.bias)}"
+        f"{_signal_metric('Score', f'{guide.score}/100')}"
+        f"{_signal_metric('Market Type', guide.market_type)}"
+        f"{_signal_metric('Trade Quality', guide.trade_quality)}"
+        f"{_signal_metric('Action', guide.action)}"
+        "</div>"
+        f"<p><strong>Plain English:</strong> {escape(guide.plain_english)}</p>"
+        "<div class=\"signal-detail-grid\">"
+        f"{trend}"
+        f"{momentum}"
+        f"{volatility}"
+        f"{bollinger}"
+        f"{key_levels}"
+        f"{score_breakdown}"
+        f"{_signal_list('Waiting For', guide.waiting_for)}"
+        f"{risk_guide}"
+        f"{_signal_list('Reasons', guide.reasons)}"
+        "</div>"
+        f"<p><strong>Final Decision:</strong> {escape(guide.final_decision)}</p>"
+        "</article>"
+    )
+
+
+def _signal_metric(label: str, value: str) -> str:
+    return (
+        "<div class=\"signal-metric\">"
+        f"<div class=\"signal-label\">{escape(label)}</div>"
+        f"<div class=\"signal-value\">{escape(value)}</div>"
+        "</div>"
+    )
+
+
+def _signal_detail(title: str, items: tuple[tuple[str, str], ...]) -> str:
+    rows = "".join(
+        f"<li><strong>{escape(label)}:</strong> {escape(value)}</li>"
+        for label, value in items
+    )
+    return f"<div class=\"signal-detail\"><h3>{escape(title)}</h3><ul>{rows}</ul></div>"
+
+
+def _signal_list(title: str, items: tuple[str, ...]) -> str:
+    rows = "".join(f"<li>{escape(item)}</li>" for item in items)
+    return f"<div class=\"signal-detail\"><h3>{escape(title)}</h3><ul>{rows}</ul></div>"
+
+
+def _score_breakdown_items(
+    score: ScoreBreakdown,
+    volume_ratio: Decimal | None,
+) -> tuple[tuple[str, str], ...]:
+    volume_value = "Unavailable" if score.volume is None else f"{score.volume}/10"
+    volume_note = "" if volume_ratio is None else f" ({volume_ratio:.0f}% of average)"
+    return (
+        ("Trend", f"{score.trend}/30"),
+        ("Momentum", f"{score.momentum}/25"),
+        ("Volatility/Risk", f"{score.volatility}/15"),
+        ("Bollinger Setup", f"{score.bollinger}/10"),
+        ("Structure", f"{score.structure}/10"),
+        ("Volume", f"{volume_value}{volume_note}"),
+        ("Total", f"{score.total}/100"),
     )
 
 
@@ -1369,6 +1577,18 @@ def _format_axis_price(price: Decimal) -> str:
     if price >= Decimal("1"):
         return f"{price:.4f}"
     return f"{price:.6f}"
+
+
+def _format_optional_price(price: Decimal | None) -> str:
+    if price is None:
+        return "Unavailable"
+    return _format_axis_price(price)
+
+
+def _format_optional_decimal(value: Decimal | None) -> str:
+    if value is None:
+        return "Unavailable"
+    return f"{value:.2f}"
 
 
 def _format_indicator_value(value: Decimal | None) -> str:
