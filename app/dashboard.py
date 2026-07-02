@@ -50,8 +50,11 @@ from app.indicators import (
     describe_volume,
 )
 from app.signals import (
+    MULTI_TIMEFRAME_WEIGHTS,
+    MultiTimeframeSignalSummary,
     ScoreBreakdown,
     TechnicalSignalGuide,
+    build_multi_timeframe_signal_summary,
     build_technical_signal_guide,
 )
 
@@ -68,6 +71,7 @@ DASHBOARD_SESSION_TTL_SECONDS = 12 * 60 * 60
 DEFAULT_CHART_INTERVAL = "1h"
 CHART_INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d")
 CHART_CANDLE_LIMIT = 120
+MULTI_TIMEFRAME_SUMMARY_INTERVALS = tuple(MULTI_TIMEFRAME_WEIGHTS)
 PHILIPPINE_TIMEZONE = timezone(timedelta(hours=8))
 
 
@@ -513,6 +517,7 @@ def render_chart_view(*, interval: str) -> str:
     """Render read-only candle chart view from local SQLite data."""
 
     series_list = _load_chart_series(interval=interval)
+    multi_timeframe_series = _load_multi_timeframe_series()
     options = "".join(
         f"<a class=\"{'active' if item == interval else ''}\" href=\"/charts?{urlencode({'interval': item})}\">{escape(item)}</a>"
         for item in CHART_INTERVALS
@@ -544,6 +549,11 @@ def render_chart_view(*, interval: str) -> str:
     <section class="panel" style="margin-bottom:18px;">
       <h2>Interval</h2>
       <div class="nav">{options}</div>
+    </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Multi-Timeframe Summary</h2>
+      <p class="muted">Rule-based rollup from 1d, 4h, 1h, and 15m. Higher timeframes carry more weight; conflicts default to WAIT.</p>
+      {_render_multi_timeframe_summary(multi_timeframe_series)}
     </section>
     <section class="panel" style="margin-bottom:18px;">
       <h2>Technical Indicators</h2>
@@ -752,6 +762,7 @@ def _shared_page_css() -> str:
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: right; }
     th:first-child, td:first-child { text-align: left; }
+    .summary-table th, .summary-table td { text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
     .positive { color: var(--good); }
     .negative { color: var(--bad); }
@@ -857,6 +868,57 @@ def _load_chart_series(*, interval: str) -> tuple[ChartSeries, ...]:
     return tuple(series_list)
 
 
+def _load_multi_timeframe_series() -> dict[str, dict[str, ChartSeries]]:
+    if not DEFAULT_CANDLE_DB_PATH.exists():
+        return {}
+
+    series_by_symbol: dict[str, dict[str, ChartSeries]] = {
+        symbol: {} for symbol in PUBLIC_MARKET_WATCHLIST
+    }
+    try:
+        connection = sqlite3.connect(DEFAULT_CANDLE_DB_PATH)
+        for symbol in PUBLIC_MARKET_WATCHLIST:
+            for interval in MULTI_TIMEFRAME_SUMMARY_INTERVALS:
+                rows = connection.execute(
+                    """
+                    SELECT symbol, interval, open_time_ms, open, high, low, close, volume
+                    FROM candles
+                    WHERE symbol = ? AND interval = ?
+                    ORDER BY open_time_ms DESC
+                    LIMIT ?
+                    """,
+                    (symbol, interval, CHART_CANDLE_LIMIT),
+                ).fetchall()
+                candles = tuple(
+                    ChartCandle(
+                        symbol=row[0],
+                        interval=row[1],
+                        open_time_ms=int(row[2]),
+                        open_price=Decimal(row[3]),
+                        high_price=Decimal(row[4]),
+                        low_price=Decimal(row[5]),
+                        close_price=Decimal(row[6]),
+                        volume=Decimal(row[7]),
+                    )
+                    for row in reversed(rows)
+                )
+                if candles:
+                    series_by_symbol[symbol][interval] = ChartSeries(
+                        symbol=symbol,
+                        interval=interval,
+                        candles=candles,
+                    )
+    except sqlite3.Error:
+        return {}
+    finally:
+        try:
+            connection.close()
+        except UnboundLocalError:
+            pass
+
+    return series_by_symbol
+
+
 def _render_chart_series(series: ChartSeries) -> str:
     if not series.candles:
         return (
@@ -935,34 +997,104 @@ def _render_indicator_table(series_list: tuple[ChartSeries, ...]) -> str:
     )
 
 
+def _render_multi_timeframe_summary(
+    series_by_symbol: dict[str, dict[str, ChartSeries]],
+) -> str:
+    summaries = []
+    for symbol in PUBLIC_MARKET_WATCHLIST:
+        interval_series = series_by_symbol.get(symbol, {})
+        guides_by_interval = {
+            interval: guide
+            for interval, series in interval_series.items()
+            if (guide := _build_signal_guide(series)) is not None
+        }
+        if not guides_by_interval:
+            continue
+        summaries.append(
+            build_multi_timeframe_signal_summary(
+                symbol=symbol,
+                guides_by_interval=guides_by_interval,
+            )
+        )
+
+    if not summaries:
+        return "<p class=\"muted\">No multi-timeframe candle data found yet.</p>"
+
+    rows = "".join(_render_multi_timeframe_summary_row(summary) for summary in summaries)
+    return (
+        "<table class=\"summary-table\">"
+        "<thead><tr>"
+        "<th>Symbol</th><th>Overall</th><th>Bias</th><th>Score</th>"
+        "<th>Alignment</th><th>Higher TF Bias</th><th>Short-Term Pressure</th>"
+        "<th>Best Use</th><th>Timeframes</th><th>Final Decision</th>"
+        "</tr></thead>"
+        f"<tbody>{rows}</tbody>"
+        "</table>"
+    )
+
+
+def _render_multi_timeframe_summary_row(summary: MultiTimeframeSignalSummary) -> str:
+    timeframe_text = " | ".join(
+        f"{item.interval}: {item.signal}/{item.bias}/{item.score}"
+        for item in summary.timeframes
+    )
+    if summary.missing_intervals:
+        timeframe_text = (
+            f"{timeframe_text} | Missing: {', '.join(summary.missing_intervals)}"
+            if timeframe_text
+            else f"Missing: {', '.join(summary.missing_intervals)}"
+        )
+    return (
+        "<tr>"
+        f"<td>{escape(summary.symbol)}</td>"
+        f"<td><strong>{escape(summary.overall)}</strong></td>"
+        f"<td>{escape(summary.bias)}</td>"
+        f"<td>{summary.score}/100</td>"
+        f"<td>{escape(summary.alignment)}</td>"
+        f"<td>{escape(summary.higher_timeframe_bias)}</td>"
+        f"<td>{escape(summary.short_term_pressure)}</td>"
+        f"<td>{escape(summary.best_use)}</td>"
+        f"<td>{escape(timeframe_text)}</td>"
+        f"<td>{escape(summary.final_decision)}</td>"
+        "</tr>"
+    )
+
+
 def _render_signal_guides(series_list: tuple[ChartSeries, ...]) -> str:
     guides = []
     for series in series_list:
         if not series.candles:
             continue
-        highs = tuple(candle.high_price for candle in series.candles)
-        lows = tuple(candle.low_price for candle in series.candles)
-        closes = tuple(candle.close_price for candle in series.candles)
-        volumes = tuple(candle.volume for candle in series.candles)
-        snapshot = build_indicator_snapshot(
-            highs=highs,
-            lows=lows,
-            closes=closes,
-            volumes=volumes,
-        )
-        guide = build_technical_signal_guide(
-            symbol=series.symbol,
-            highs=highs,
-            lows=lows,
-            closes=closes,
-            volumes=volumes,
-            snapshot=snapshot,
-        )
-        guides.append(_render_signal_guide(guide))
+        guide = _build_signal_guide(series)
+        if guide is not None:
+            guides.append(_render_signal_guide(guide))
 
     if not guides:
         return "<p class=\"muted\">No candle data found yet. Run the public candle collector first.</p>"
     return f"<div class=\"signal-grid\">{''.join(guides)}</div>"
+
+
+def _build_signal_guide(series: ChartSeries) -> TechnicalSignalGuide | None:
+    if not series.candles:
+        return None
+    highs = tuple(candle.high_price for candle in series.candles)
+    lows = tuple(candle.low_price for candle in series.candles)
+    closes = tuple(candle.close_price for candle in series.candles)
+    volumes = tuple(candle.volume for candle in series.candles)
+    snapshot = build_indicator_snapshot(
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        volumes=volumes,
+    )
+    return build_technical_signal_guide(
+        symbol=series.symbol,
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        volumes=volumes,
+        snapshot=snapshot,
+    )
 
 
 def _render_signal_guide(guide: TechnicalSignalGuide) -> str:

@@ -25,6 +25,12 @@ ATR_HIGH_THRESHOLD_PERCENT = Decimal("3.5")
 BOLLINGER_SQUEEZE_THRESHOLD_PERCENT = Decimal("4")
 BOLLINGER_FLAT_THRESHOLD_PERCENT = Decimal("0.25")
 SUPPORT_RESISTANCE_LOOKBACK_CANDLES = 20
+MULTI_TIMEFRAME_WEIGHTS = {
+    "1d": 40,
+    "4h": 35,
+    "1h": 20,
+    "15m": 5,
+}
 
 SCORE_WEIGHTS = {
     "trend": 30,
@@ -113,6 +119,33 @@ class TechnicalSignalGuide:
     score_breakdown: ScoreBreakdown
     missing_data: tuple[str, ...]
     volume_vs_average_percent: Decimal | None
+
+
+@dataclass(frozen=True)
+class TimeframeSignal:
+    interval: str
+    weight: int
+    signal: str
+    bias: str
+    score: int
+    market_type: str
+    trade_quality: str
+    final_decision: str
+
+
+@dataclass(frozen=True)
+class MultiTimeframeSignalSummary:
+    symbol: str
+    overall: str
+    bias: str
+    score: int
+    alignment: str
+    higher_timeframe_bias: str
+    short_term_pressure: str
+    best_use: str
+    final_decision: str
+    timeframes: tuple[TimeframeSignal, ...]
+    missing_intervals: tuple[str, ...]
 
 
 def build_technical_signal_guide(
@@ -243,6 +276,58 @@ def build_technical_signal_guide(
     )
 
 
+def build_multi_timeframe_signal_summary(
+    *,
+    symbol: str,
+    guides_by_interval: dict[str, TechnicalSignalGuide],
+) -> MultiTimeframeSignalSummary:
+    """Build a conservative overall summary from multiple deterministic guides."""
+
+    timeframes = tuple(
+        TimeframeSignal(
+            interval=interval,
+            weight=weight,
+            signal=guide.signal,
+            bias=guide.bias,
+            score=guide.score,
+            market_type=guide.market_type,
+            trade_quality=guide.trade_quality,
+            final_decision=guide.final_decision,
+        )
+        for interval, weight in MULTI_TIMEFRAME_WEIGHTS.items()
+        if (guide := guides_by_interval.get(interval)) is not None
+    )
+    missing_intervals = tuple(
+        interval for interval in MULTI_TIMEFRAME_WEIGHTS if interval not in guides_by_interval
+    )
+    weighted_score = _weighted_score(timeframes)
+    weighted_bias = _weighted_bias(timeframes)
+    bias = _bias_from_weighted_value(weighted_bias)
+    higher_timeframe_bias = _higher_timeframe_bias(guides_by_interval)
+    short_term_pressure = _short_term_pressure(guides_by_interval)
+    alignment = _timeframe_alignment(guides_by_interval)
+    overall = _overall_advice(
+        guides_by_interval=guides_by_interval,
+        alignment=alignment,
+        weighted_score=weighted_score,
+        weighted_bias=weighted_bias,
+        missing_intervals=missing_intervals,
+    )
+    return MultiTimeframeSignalSummary(
+        symbol=symbol,
+        overall=overall,
+        bias=bias,
+        score=weighted_score,
+        alignment=alignment,
+        higher_timeframe_bias=higher_timeframe_bias,
+        short_term_pressure=short_term_pressure,
+        best_use=_best_use(overall, alignment, higher_timeframe_bias),
+        final_decision=_overall_final_decision(overall, alignment),
+        timeframes=timeframes,
+        missing_intervals=missing_intervals,
+    )
+
+
 def _missing_data(snapshot: IndicatorSnapshot) -> tuple[str, ...]:
     missing = []
     if snapshot.sma is None:
@@ -264,6 +349,177 @@ def _missing_data(snapshot: IndicatorSnapshot) -> tuple[str, ...]:
     if snapshot.volume is None or snapshot.average_volume is None or snapshot.volume_ratio is None:
         missing.append("Volume average")
     return tuple(missing)
+
+
+def _weighted_score(timeframes: tuple[TimeframeSignal, ...]) -> int:
+    total_weight = sum(item.weight for item in timeframes)
+    if total_weight == 0:
+        return 0
+    return round(sum(item.score * item.weight for item in timeframes) / total_weight)
+
+
+def _weighted_bias(timeframes: tuple[TimeframeSignal, ...]) -> Decimal:
+    total_weight = sum(item.weight for item in timeframes)
+    if total_weight == 0:
+        return Decimal("0")
+    weighted = sum(_bias_value(item.bias) * item.weight for item in timeframes)
+    return Decimal(weighted) / Decimal(total_weight)
+
+
+def _bias_value(bias: str) -> int:
+    return {
+        "Strong Bullish": 3,
+        "Bullish": 2,
+        "Slight Bullish": 1,
+        "Neutral": 0,
+        "Slight Bearish": -1,
+        "Bearish": -2,
+        "Strong Bearish": -3,
+    }.get(bias, 0)
+
+
+def _bias_from_weighted_value(value: Decimal) -> str:
+    if value >= Decimal("2.25"):
+        return "Strong Bullish"
+    if value >= Decimal("1.5"):
+        return "Bullish"
+    if value >= Decimal("0.5"):
+        return "Slight Bullish"
+    if value <= Decimal("-2.25"):
+        return "Strong Bearish"
+    if value <= Decimal("-1.5"):
+        return "Bearish"
+    if value <= Decimal("-0.5"):
+        return "Slight Bearish"
+    return "Neutral"
+
+
+def _higher_timeframe_bias(guides_by_interval: dict[str, TechnicalSignalGuide]) -> str:
+    higher_timeframes = tuple(
+        TimeframeSignal(
+            interval=interval,
+            weight=MULTI_TIMEFRAME_WEIGHTS[interval],
+            signal=guide.signal,
+            bias=guide.bias,
+            score=guide.score,
+            market_type=guide.market_type,
+            trade_quality=guide.trade_quality,
+            final_decision=guide.final_decision,
+        )
+        for interval in ("1d", "4h")
+        if (guide := guides_by_interval.get(interval)) is not None
+    )
+    if not higher_timeframes:
+        return "Unavailable"
+    return _bias_from_weighted_value(_weighted_bias(higher_timeframes))
+
+
+def _short_term_pressure(guides_by_interval: dict[str, TechnicalSignalGuide]) -> str:
+    short_timeframes = tuple(
+        TimeframeSignal(
+            interval=interval,
+            weight=MULTI_TIMEFRAME_WEIGHTS[interval],
+            signal=guide.signal,
+            bias=guide.bias,
+            score=guide.score,
+            market_type=guide.market_type,
+            trade_quality=guide.trade_quality,
+            final_decision=guide.final_decision,
+        )
+        for interval in ("1h", "15m")
+        if (guide := guides_by_interval.get(interval)) is not None
+    )
+    if not short_timeframes:
+        return "Unavailable"
+    value = _weighted_bias(short_timeframes)
+    if value >= Decimal("0.75"):
+        return "Bullish bounce"
+    if value <= Decimal("-0.75"):
+        return "Bearish pressure"
+    return "Neutral / mixed"
+
+
+def _timeframe_alignment(guides_by_interval: dict[str, TechnicalSignalGuide]) -> str:
+    guides = tuple(guides_by_interval.values())
+    if len(guides) < 2:
+        return "Insufficient Data"
+    bias_values = [_bias_value(guide.bias) for guide in guides]
+    has_bullish = any(value > 0 for value in bias_values)
+    has_bearish = any(value < 0 for value in bias_values)
+    higher_values = [
+        _bias_value(guides_by_interval[interval].bias)
+        for interval in ("1d", "4h")
+        if interval in guides_by_interval
+    ]
+    if len(higher_values) == 2 and higher_values[0] * higher_values[1] < 0:
+        return "Higher Timeframe Conflict"
+    if len(higher_values) == 2 and higher_values[0] > 0 and higher_values[1] > 0 and has_bearish:
+        return "Higher TF Bullish / Short-Term Conflict"
+    if len(higher_values) == 2 and higher_values[0] < 0 and higher_values[1] < 0 and has_bullish:
+        return "Higher TF Bearish / Short-Term Conflict"
+    if has_bullish and has_bearish:
+        return "Mixed"
+    if all(value > 0 for value in bias_values):
+        return "Aligned Bullish"
+    if all(value < 0 for value in bias_values):
+        return "Aligned Bearish"
+    return "Partially Aligned"
+
+
+def _overall_advice(
+    *,
+    guides_by_interval: dict[str, TechnicalSignalGuide],
+    alignment: str,
+    weighted_score: int,
+    weighted_bias: Decimal,
+    missing_intervals: tuple[str, ...],
+) -> str:
+    if "1d" in missing_intervals or "4h" in missing_intervals:
+        return "WAIT"
+    if alignment in ("Higher Timeframe Conflict", "Insufficient Data"):
+        return "WAIT"
+    higher = [guides_by_interval[interval] for interval in ("1d", "4h")]
+    if any(guide.signal == "AVOID" for guide in higher):
+        return "AVOID"
+    if weighted_bias >= Decimal("1.0") and weighted_score >= 70:
+        return "BUY WATCH"
+    if weighted_bias <= Decimal("-1.0") and weighted_score >= 70:
+        return "SELL WATCH"
+    if weighted_score < AVOID_SIGNAL_THRESHOLD:
+        return "AVOID"
+    return "WAIT"
+
+
+def _best_use(overall: str, alignment: str, higher_timeframe_bias: str) -> str:
+    if overall == "BUY WATCH":
+        return "Use 4H for setup and 1H for timing; avoid chasing 15m spikes."
+    if overall == "SELL WATCH":
+        return "Use 4H support breaks for confirmation; avoid reacting to 15m noise."
+    if overall == "AVOID":
+        return "Stand aside until structure and indicators improve."
+    if alignment == "Higher Timeframe Conflict":
+        return "Wait for 1D and 4H to stop disagreeing."
+    if "Short-Term Conflict" in alignment:
+        return "Use higher timeframe as the anchor; wait for lower-timeframe timing to confirm."
+    if "Bearish" in higher_timeframe_bias:
+        return "Wait for 4H recovery or confirmed support breakdown."
+    if "Bullish" in higher_timeframe_bias:
+        return "Wait for 4H continuation and 1H timing confirmation."
+    return "Wait for a clear range breakout."
+
+
+def _overall_final_decision(overall: str, alignment: str) -> str:
+    if overall == "BUY WATCH":
+        return "BUY WATCH. Higher timeframes support upside, but confirmation is still required."
+    if overall == "SELL WATCH":
+        return "SELL WATCH. Higher timeframes support downside, but confirmation is still required."
+    if overall == "AVOID":
+        return "AVOID. Multi-timeframe conditions are poor or incomplete."
+    if alignment == "Higher Timeframe Conflict":
+        return "WAIT. Timeframes conflict; do not let a lower-timeframe signal override the higher timeframe."
+    if "Short-Term Conflict" in alignment:
+        return f"{overall}. Higher timeframes lead, but lower-timeframe timing has not confirmed."
+    return "WAIT. No clean multi-timeframe setup yet."
 
 
 def _score_breakdown(
