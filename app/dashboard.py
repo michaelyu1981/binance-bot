@@ -72,6 +72,13 @@ from app.signals import (
     build_multi_timeframe_signal_summary,
     build_technical_signal_guide,
 )
+from app.strategies import (
+    STRATEGIES,
+    StrategyDecision,
+    build_strategy_decision,
+    build_strategy_decisions,
+    strategy_by_slug,
+)
 
 
 DEFAULT_DASHBOARD_HOST = "127.0.0.1"
@@ -193,7 +200,14 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                     include_body=include_body,
                 )
                 return
-            if parsed_url.path not in ("/", "/index.html", "/charts", "/advisory", "/account"):
+            if parsed_url.path not in (
+                "/",
+                "/index.html",
+                "/charts",
+                "/advisory",
+                "/algorithms",
+                "/account",
+            ):
                 self.send_error(404, "Not found")
                 return
 
@@ -209,6 +223,11 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 symbol = _parse_advisory_symbol(query.get("symbol", [PUBLIC_MARKET_WATCHLIST[0]])[0])
                 advisor = query.get("advisor", ["all"])[0]
                 body = render_advisory_view(symbol=symbol, advisor=advisor)
+            elif parsed_url.path == "/algorithms":
+                symbol = _parse_watchlist_symbol(query.get("symbol", [PUBLIC_MARKET_WATCHLIST[0]])[0])
+                algorithm = query.get("algorithm", ["all"])[0]
+                label = query.get("label", [""])[0]
+                body = render_algorithms_view(symbol=symbol, algorithm=algorithm, label=label)
             elif parsed_url.path == "/account":
                 body = render_account_view()
             else:
@@ -693,6 +712,62 @@ def render_advisory_view(*, symbol: str, advisor: str) -> str:
 """
 
 
+def render_algorithms_view(*, symbol: str, algorithm: str, label: str) -> str:
+    """Render deterministic strategy algorithm output."""
+
+    symbol_options = "".join(
+        f"<a class=\"{'active' if item == symbol else ''}\" href=\"/algorithms?{urlencode({'symbol': item, 'algorithm': algorithm, 'label': label})}\">{escape(item)}</a>"
+        for item in PUBLIC_MARKET_WATCHLIST
+    )
+    algorithm_options = (
+        f"<a class=\"{'active' if algorithm == 'all' else ''}\" href=\"/algorithms?{urlencode({'symbol': symbol, 'algorithm': 'all', 'label': label})}\">All Algorithms</a>"
+        + "".join(
+            f"<a class=\"{'active' if item.slug == algorithm else ''}\" href=\"/algorithms?{urlencode({'symbol': symbol, 'algorithm': item.slug, 'label': label})}\">{escape(item.name)}</a>"
+            for item in STRATEGIES
+        )
+    )
+    body = _render_algorithms_body(symbol=symbol, algorithm=algorithm, label=label)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
+  <title>CoinPilot Algorithms</title>
+  <style>{_shared_page_css()}</style>
+</head>
+<body>
+  <header>
+    <h1>CoinPilot Algorithms</h1>
+    <div class="muted">Deterministic strategy rules only. No AI calls. No Binance order endpoints. No automatic trading.</div>
+  </header>
+  {_render_nav("algorithms")}
+  <main>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Coin</h2>
+      <div class="nav">{symbol_options}</div>
+    </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Algorithm</h2>
+      <div class="nav">{algorithm_options}</div>
+    </section>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Run Label</h2>
+      <form method="get" action="/algorithms" class="filter-form">
+        <input type="hidden" name="symbol" value="{escape(symbol)}">
+        <input type="hidden" name="algorithm" value="{escape(algorithm)}">
+        <input name="label" value="{escape(label)}" placeholder="Example: Michael Fast Scraper test">
+        <button type="submit">Apply Label</button>
+      </form>
+      <p class="muted">The label is display-only and is not saved. Algorithm logic remains static and rule-based.</p>
+    </section>
+    {body}
+  </main>
+</body>
+</html>
+"""
+
+
 def render_login_page(*, message: str) -> str:
     """Render dashboard login page."""
 
@@ -832,6 +907,19 @@ def _shared_page_css() -> str:
       background: #fbfcfe;
     }
     .advisory-card h3 { margin: 0 0 6px; font-size: 15px; }
+    .filter-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .filter-form input, .filter-form button {
+      margin-top: 0;
+    }
+    .filter-form button {
+      width: auto;
+      white-space: nowrap;
+    }
     .sparkline {
       width: 100%;
       height: 260px;
@@ -929,6 +1017,8 @@ def _shared_page_css() -> str:
       main, header, .topbar { padding: 16px; }
       .signal-head, .signal-detail-grid { grid-template-columns: 1fr; }
       .advisory-grid { grid-template-columns: 1fr; }
+      .filter-form { grid-template-columns: 1fr; }
+      .filter-form button { width: 100%; }
     }
     """
 
@@ -941,6 +1031,7 @@ def _render_nav(active: str) -> str:
         f"<a class=\"{'active' if active == 'dashboard' else ''}\" href=\"/\">Dashboard Main</a>"
         f"<a class=\"{'active' if active == 'charts' else ''}\" href=\"/charts\">Chart View</a>"
         f"<a class=\"{'active' if active == 'advisory' else ''}\" href=\"/advisory\">Advisory</a>"
+        f"<a class=\"{'active' if active == 'algorithms' else ''}\" href=\"/algorithms\">Algorithms</a>"
         f"<a class=\"{'active' if active == 'account' else ''}\" href=\"/account\">Account</a>"
         "</div>"
         f"<div class=\"nav\">{logout_link}</div>"
@@ -1245,6 +1336,83 @@ def _render_advisory_opinion(opinion: AdvisoryOpinion) -> str:
         f"<strong>Confidence:</strong> {opinion.confidence}/100</p>"
         f"<p>{escape(opinion.outlook)}</p>"
         "<p class=\"muted\">Safety: advisory only; no orders; public data only.</p>"
+        "</article>"
+    )
+
+
+def _render_algorithms_body(*, symbol: str, algorithm: str, label: str) -> str:
+    interval_series = _load_multi_timeframe_series().get(symbol, {})
+    guides_by_interval = {
+        interval: guide
+        for interval, series in interval_series.items()
+        if (guide := _build_signal_guide(series)) is not None
+    }
+    if not guides_by_interval:
+        return (
+            "<section class=\"panel\">"
+            f"<h2>{escape(symbol)}</h2>"
+            "<p class=\"muted\">No multi-timeframe candle data found yet.</p>"
+            "</section>"
+        )
+
+    summary = build_multi_timeframe_signal_summary(
+        symbol=symbol,
+        guides_by_interval=guides_by_interval,
+    )
+    if algorithm == "all":
+        decisions = build_strategy_decisions(
+            symbol=symbol,
+            summary=summary,
+            guides_by_interval=guides_by_interval,
+            user_label=label,
+        )
+    else:
+        strategy = strategy_by_slug(algorithm)
+        decisions = (
+            build_strategy_decision(
+                strategy=strategy,
+                symbol=symbol,
+                summary=summary,
+                guides_by_interval=guides_by_interval,
+                user_label=label,
+            ),
+        )
+
+    return (
+        "<section class=\"panel\" style=\"margin-bottom:18px;\">"
+        f"<h2>{escape(symbol)} Algorithm Summary</h2>"
+        f"<p><strong>Overall:</strong> {escape(summary.overall)} | "
+        f"<strong>Bias:</strong> {escape(summary.bias)} | "
+        f"<strong>Score:</strong> {summary.score}/100 | "
+        f"<strong>Alignment:</strong> {escape(summary.alignment)}</p>"
+        "<p class=\"muted\">Algorithm output is advisory only. It cannot place trades, size orders, or access Binance order endpoints.</p>"
+        "</section>"
+        "<section class=\"advisory-grid\">"
+        f"{''.join(_render_strategy_decision(decision) for decision in decisions)}"
+        "</section>"
+    )
+
+
+def _render_strategy_decision(decision: StrategyDecision) -> str:
+    label = (
+        f"<p><strong>Run Label:</strong> {escape(decision.user_label)}</p>"
+        if decision.user_label
+        else ""
+    )
+    return (
+        "<article class=\"advisory-card\">"
+        f"<h3>{escape(decision.strategy.name)}</h3>"
+        f"<p class=\"muted\">{escape(decision.strategy.style)}</p>"
+        f"{label}"
+        f"<p><strong>Verdict:</strong> {escape(decision.verdict)} | "
+        f"<strong>Score:</strong> {decision.score}/100 | "
+        f"<strong>Risk:</strong> {escape(decision.risk_level)}</p>"
+        f"<p><strong>Mode:</strong> {escape(decision.mode)}</p>"
+        f"<p>{escape(decision.thesis)}</p>"
+        f"{_signal_list('Triggers Needed', decision.triggers)}"
+        f"{_signal_list('Invalidation / Stop Conditions', decision.invalidation)}"
+        f"{_signal_list('Rule Reasons', decision.reasons)}"
+        "<p class=\"muted\">Safety: static algorithm only; no AI; no orders; no automatic trading.</p>"
         "</article>"
     )
 
@@ -2732,6 +2900,10 @@ def _parse_chart_interval(value: str) -> str:
 
 
 def _parse_advisory_symbol(value: str) -> str:
+    return _parse_watchlist_symbol(value)
+
+
+def _parse_watchlist_symbol(value: str) -> str:
     if value in PUBLIC_MARKET_WATCHLIST:
         return value
     return PUBLIC_MARKET_WATCHLIST[0]

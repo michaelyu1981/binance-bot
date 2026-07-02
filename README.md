@@ -199,6 +199,7 @@ Dashboard navigation includes:
 - Dashboard Main
 - Chart View
 - Advisory
+- Algorithms
 - Account
 
 Chart View reads local SQLite candles from:
@@ -220,6 +221,12 @@ technical indicators by symbol and interval:
 
 These charts and indicators are advisory only. They are not buy/sell signals and
 do not enable trading.
+
+The Algorithms page runs named deterministic strategy rules against the same
+local public candle signals. These rules are static code, not AI, and are
+advisory only. They do not place orders, size trades, access Binance order
+endpoints, or enable automatic trading. A run label can be entered on the page
+for display only; it is not saved and does not change the algorithm logic.
 
 Dashboard login is optional and controlled only through environment variables:
 
