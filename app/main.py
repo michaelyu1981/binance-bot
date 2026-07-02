@@ -6,6 +6,13 @@ import argparse
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 
+from app.backtesting import (
+    BACKTEST_PERIODS,
+    DEFAULT_BACKTEST_DAYS,
+    DEFAULT_BACKTEST_INTERVAL,
+    format_backtest_results,
+    run_backtests,
+)
 from app.binance_account import (
     BinanceAccountError,
     fetch_account_snapshot,
@@ -24,6 +31,12 @@ from app.candle_store import (
 )
 from app.config import DEFAULT_COLLECTION_INTERVAL_SECONDS
 from app.dashboard import DEFAULT_DASHBOARD_HOST, DEFAULT_DASHBOARD_PORT, run_dashboard_server
+from app.historical_candles import (
+    DEFAULT_HISTORY_DAYS,
+    DEFAULT_HISTORY_INTERVAL,
+    download_historical_candles,
+    format_historical_download_results,
+)
 from app.monitor import run_once, run_watch
 from app.signal_watcher import run_signal_watch_loop, run_signal_watch_once
 from app.summary import DEFAULT_SUMMARY_HOURS, build_market_summary, format_market_summary
@@ -140,6 +153,48 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Do not send Telegram from --watch-signals even if Telegram env vars are configured.",
     )
+    parser.add_argument(
+        "--backtest",
+        action="store_true",
+        help="Run deterministic dry-run strategy backtests against local SQLite candles.",
+    )
+    parser.add_argument(
+        "--backtest-days",
+        type=_positive_int,
+        default=DEFAULT_BACKTEST_DAYS,
+        metavar="N",
+        help=f"Backtest lookback days. Suggested: {', '.join(str(item) for item in BACKTEST_PERIODS)}.",
+    )
+    parser.add_argument(
+        "--backtest-interval",
+        default=DEFAULT_BACKTEST_INTERVAL,
+        metavar="INTERVAL",
+        help=f"Backtest candle interval. Default: {DEFAULT_BACKTEST_INTERVAL}.",
+    )
+    parser.add_argument(
+        "--backtest-strategy",
+        default="all",
+        metavar="SLUG",
+        help="Backtest one strategy slug, or all. Default: all.",
+    )
+    parser.add_argument(
+        "--download-history",
+        action="store_true",
+        help="Download public historical Binance klines into local SQLite for backtests.",
+    )
+    parser.add_argument(
+        "--history-days",
+        type=_positive_int,
+        default=DEFAULT_HISTORY_DAYS,
+        metavar="N",
+        help=f"Historical candle lookback days. Default: {DEFAULT_HISTORY_DAYS}.",
+    )
+    parser.add_argument(
+        "--history-interval",
+        default=DEFAULT_HISTORY_INTERVAL,
+        metavar="INTERVAL",
+        help=f"Historical candle interval. Default: {DEFAULT_HISTORY_INTERVAL}.",
+    )
     return parser.parse_args(argv)
 
 
@@ -222,6 +277,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 send_telegram=send_telegram,
             )
         return run_signal_watch_once(send_telegram=send_telegram)
+
+    if args.backtest:
+        results = run_backtests(
+            days=args.backtest_days,
+            interval=args.backtest_interval,
+            strategy_slug=args.backtest_strategy,
+        )
+        print(format_backtest_results(results))
+        return 0
+
+    if args.download_history:
+        results = download_historical_candles(
+            days=args.history_days,
+            interval=args.history_interval,
+        )
+        print(format_historical_download_results(results))
+        return 0
 
     if args.collect_candles:
         if args.watch:

@@ -238,6 +238,58 @@ Included deterministic algorithm summaries:
   simulated full exit at average entry x 1.008.
 - CoinPilot Gear Shifting Algo: dry-run 3-gear hybrid model for volatility
   snap-back, momentum trailing, and defensive grid state transitions.
+- CoinPilot Gear Shifting Algo V4: dry-run 3-gear hybrid with ATRP volatility
+  filter, 1.005x baseline exit, and breakout extension guardrails. Current
+  dashboard summary uses positive MACD histogram as the available proxy for
+  improving histogram until previous-histogram state is added.
+
+## Backtests
+
+Backtests are deterministic dry-run simulations against local public SQLite
+candles only. They do not use Binance account data, do not call order endpoints,
+and do not place trades.
+
+Run a 90-day local backtest:
+
+```bash
+python3 -m app.main --backtest --backtest-days 90
+```
+
+Download public candles before running larger windows:
+
+```bash
+python3 -m app.main --download-history --history-days 90 --history-interval 1h
+python3 -m app.main --download-history --history-days 365 --history-interval 1h
+python3 -m app.main --download-history --history-days 730 --history-interval 1h
+```
+
+Run longer windows after enough historical candles are available locally:
+
+```bash
+python3 -m app.main --backtest --backtest-days 365
+python3 -m app.main --backtest --backtest-days 730
+```
+
+Dashboard view:
+
+```text
+/backtests
+```
+
+Backtest v1 starts with 100 USDT, applies a simulated 0.1% fee, uses local
+candles, and marks any open position to the last close. If the local database
+does not contain enough history for 1 year or 2 years, the report shows the
+available coverage instead of pretending the full period was tested.
+
+Historical backtest candles are stored separately from the live monitoring
+database:
+
+```text
+data/historical_market_data.sqlite3
+```
+
+This keeps long backtest windows from being removed by the live monitor's
+90-day candle retention cleanup.
 
 Dashboard login is optional and controlled only through environment variables:
 

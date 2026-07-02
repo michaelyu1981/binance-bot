@@ -18,6 +18,13 @@ import time
 from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from app.backtesting import (
+    BACKTEST_PERIODS,
+    DEFAULT_BACKTEST_DAYS,
+    DEFAULT_BACKTEST_INTERVAL,
+    BacktestResult,
+    run_backtests,
+)
 from app.binance_account import (
     AccountBalance,
     AccountSnapshot,
@@ -206,6 +213,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 "/charts",
                 "/advisory",
                 "/algorithms",
+                "/backtests",
                 "/account",
             ):
                 self.send_error(404, "Not found")
@@ -228,6 +236,10 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 algorithm = query.get("algorithm", ["all"])[0]
                 label = query.get("label", [""])[0]
                 body = render_algorithms_view(symbol=symbol, algorithm=algorithm, label=label)
+            elif parsed_url.path == "/backtests":
+                days = _parse_backtest_days(query.get("days", [str(DEFAULT_BACKTEST_DAYS)])[0])
+                interval = query.get("interval", [DEFAULT_BACKTEST_INTERVAL])[0]
+                body = render_backtests_view(days=days, interval=interval)
             elif parsed_url.path == "/account":
                 body = render_account_view()
             else:
@@ -768,6 +780,42 @@ def render_algorithms_view(*, symbol: str, algorithm: str, label: str) -> str:
 """
 
 
+def render_backtests_view(*, days: int, interval: str) -> str:
+    """Render deterministic local strategy backtests."""
+
+    period_options = "".join(
+        f"<a class=\"{'active' if item == days else ''}\" href=\"/backtests?{urlencode({'days': str(item), 'interval': interval})}\">{_backtest_period_label(item)}</a>"
+        for item in BACKTEST_PERIODS
+    )
+    results = run_backtests(days=days, interval=interval)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
+  <title>CoinPilot Backtests</title>
+  <style>{_shared_page_css()}</style>
+</head>
+<body>
+  <header>
+    <h1>CoinPilot Backtests</h1>
+    <div class="muted">Deterministic dry-run simulation from local public candles. No API key. No account access. No orders.</div>
+  </header>
+  {_render_nav("backtests")}
+  <main>
+    <section class="panel" style="margin-bottom:18px;">
+      <h2>Period</h2>
+      <div class="nav">{period_options}</div>
+      <p class="muted">Backtest v1 starts with 100 USDT, applies a 0.1% simulated fee, and marks open positions to the last close.</p>
+    </section>
+    {_render_backtest_results(results)}
+  </main>
+</body>
+</html>
+"""
+
+
 def render_login_page(*, message: str) -> str:
     """Render dashboard login page."""
 
@@ -1032,6 +1080,7 @@ def _render_nav(active: str) -> str:
         f"<a class=\"{'active' if active == 'charts' else ''}\" href=\"/charts\">Chart View</a>"
         f"<a class=\"{'active' if active == 'advisory' else ''}\" href=\"/advisory\">Advisory</a>"
         f"<a class=\"{'active' if active == 'algorithms' else ''}\" href=\"/algorithms\">Algorithms</a>"
+        f"<a class=\"{'active' if active == 'backtests' else ''}\" href=\"/backtests\">Backtests</a>"
         f"<a class=\"{'active' if active == 'account' else ''}\" href=\"/account\">Account</a>"
         "</div>"
         f"<div class=\"nav\">{logout_link}</div>"
@@ -1414,6 +1463,49 @@ def _render_strategy_decision(decision: StrategyDecision) -> str:
         f"{_signal_list('Rule Reasons', decision.reasons)}"
         "<p class=\"muted\">Safety: static algorithm only; no AI; no orders; no automatic trading.</p>"
         "</article>"
+    )
+
+
+def _render_backtest_results(results: tuple[BacktestResult, ...]) -> str:
+    if not results:
+        return "<section class=\"panel\"><p class=\"muted\">No backtest results available.</p></section>"
+    rows = "".join(_render_backtest_result_row(result) for result in results)
+    return (
+        "<section class=\"panel\">"
+        "<h2>Results</h2>"
+        "<p class=\"muted\">These are simulated results only. They are not predictions and are not permission to trade.</p>"
+        "<table class=\"summary-table\">"
+        "<thead><tr>"
+        "<th>Symbol</th><th>Algorithm</th><th>Period</th><th>Candles</th>"
+        "<th>Ending Value</th><th>P/L</th><th>Trades</th><th>Status</th>"
+        "</tr></thead>"
+        f"<tbody>{rows}</tbody>"
+        "</table>"
+        "</section>"
+    )
+
+
+def _render_backtest_result_row(result: BacktestResult) -> str:
+    status = result.skipped_reason or "Simulated"
+    value = _format_usdt_value(result.ending_value_usdt)
+    profit_class = "positive" if result.profit_loss_usdt >= 0 else "negative"
+    profit = f"{result.profit_loss_usdt:+.2f} USDT ({result.profit_loss_percent:+.2f}%)"
+    available = (
+        "unknown"
+        if result.available_days is None
+        else f"{result.available_days:.1f}d available"
+    )
+    return (
+        "<tr>"
+        f"<td>{escape(result.symbol)}</td>"
+        f"<td>{escape(result.strategy.name)}</td>"
+        f"<td>{result.requested_days}d<br><span class=\"muted\">{escape(available)}</span></td>"
+        f"<td>{result.candles_used}</td>"
+        f"<td>{escape(value)}</td>"
+        f"<td class=\"{profit_class}\">{escape(profit)}</td>"
+        f"<td>{len(result.trades)}</td>"
+        f"<td>{escape(status)}</td>"
+        "</tr>"
     )
 
 
@@ -2897,6 +2989,24 @@ def _parse_chart_interval(value: str) -> str:
     if value in CHART_INTERVALS:
         return value
     return DEFAULT_CHART_INTERVAL
+
+
+def _parse_backtest_days(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        return DEFAULT_BACKTEST_DAYS
+    if parsed in BACKTEST_PERIODS:
+        return parsed
+    return DEFAULT_BACKTEST_DAYS
+
+
+def _backtest_period_label(days: int) -> str:
+    if days == 365:
+        return "1 Year"
+    if days == 730:
+        return "2 Years"
+    return f"{days} Days"
 
 
 def _parse_advisory_symbol(value: str) -> str:

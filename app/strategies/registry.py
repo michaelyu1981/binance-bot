@@ -7,6 +7,7 @@ from typing import Protocol
 from app.signals import MultiTimeframeSignalSummary, TechnicalSignalGuide
 from app.strategies.breakout_scout import CoinPilotBreakoutScout
 from app.strategies.gear_shifting_algo import CoinPilotGearShiftingAlgo
+from app.strategies.gear_shifting_algo_v4 import CoinPilotGearShiftingAlgoV4
 from app.strategies.grid_accumulation_scalper import CoinPilotGridAccumulationScalper
 from app.strategies.helpers import clean_user_label
 from app.strategies.no_martingale_guard import CoinPilotNoMartingaleGuard
@@ -36,6 +37,7 @@ STRATEGY_REGISTRY: tuple[Strategy, ...] = (
     CoinPilotNoMartingaleGuard(),
     CoinPilotGridAccumulationScalper(),
     CoinPilotGearShiftingAlgo(),
+    CoinPilotGearShiftingAlgoV4(),
 )
 
 STRATEGIES = tuple(strategy.definition for strategy in STRATEGY_REGISTRY)

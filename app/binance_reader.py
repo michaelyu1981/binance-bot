@@ -124,6 +124,67 @@ def fetch_public_candles(
     ]
 
 
+def fetch_public_candles_window(
+    symbol: str,
+    interval: str,
+    *,
+    start_time_ms: int,
+    end_time_ms: int,
+    limit: int = 1000,
+    timeout_seconds: float = 10.0,
+) -> list[Candle]:
+    """Fetch public spot candles from Binance's klines endpoint for a time window."""
+
+    normalized_symbol = _normalize_symbol(symbol)
+    normalized_interval = interval.strip()
+    if not normalized_interval:
+        raise ValueError("Interval cannot be empty.")
+    if limit <= 0 or limit > 1000:
+        raise ValueError("limit must be between 1 and 1000.")
+    if start_time_ms <= 0 or end_time_ms <= start_time_ms:
+        raise ValueError("Invalid candle time window.")
+
+    query = urlencode(
+        {
+            "symbol": normalized_symbol,
+            "interval": normalized_interval,
+            "startTime": str(start_time_ms),
+            "endTime": str(end_time_ms),
+            "limit": str(limit),
+        }
+    )
+    url = f"{PUBLIC_SPOT_API_BASE_URL}/api/v3/klines?{query}"
+
+    try:
+        with urlopen(url, timeout=timeout_seconds) as response:
+            payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        raise BinancePublicMarketError(
+            f"Binance public candle request failed with HTTP {exc.code}."
+        ) from exc
+    except URLError as exc:
+        raise BinancePublicMarketError(
+            f"Could not reach Binance public candle endpoint: {exc.reason}"
+        ) from exc
+
+    try:
+        raw_candles = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise BinancePublicMarketError("Binance returned invalid candle JSON.") from exc
+
+    if not isinstance(raw_candles, list):
+        raise BinancePublicMarketError("Binance candle response was not a list.")
+
+    return [
+        _parse_candle(
+            item,
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+        )
+        for item in raw_candles
+    ]
+
+
 def _fetch_public_price(symbol: str, *, timeout_seconds: float) -> MarketPrice:
     query = urlencode({"symbol": symbol})
     url = f"{PUBLIC_SPOT_API_BASE_URL}/api/v3/ticker/price?{query}"
