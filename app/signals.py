@@ -81,6 +81,7 @@ class TechnicalSignalGuide:
     plain_english: str
     final_decision: str
     current_price: Decimal | None
+    current_low: Decimal | None
     sma50: Decimal | None
     ema20: Decimal | None
     distance_from_sma50_percent: Decimal | None
@@ -160,6 +161,7 @@ def build_technical_signal_guide(
     """Build a rule-based technical signal guide from public candle data."""
 
     current_price = closes[-1] if closes else None
+    current_low = lows[-1] if lows else None
     missing_data = _missing_data(snapshot)
     distance_from_sma50 = _ratio_percent_delta(current_price, snapshot.sma)
     band_width = _bollinger_band_width(snapshot)
@@ -235,6 +237,7 @@ def build_technical_signal_guide(
         plain_english=plain_english,
         final_decision=_final_decision(signal, bias, market_type),
         current_price=current_price,
+        current_low=current_low,
         sma50=snapshot.sma,
         ema20=snapshot.ema,
         distance_from_sma50_percent=distance_from_sma50,

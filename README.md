@@ -242,6 +242,9 @@ Included deterministic algorithm summaries:
   filter, 1.005x baseline exit, and breakout extension guardrails. Current
   dashboard summary uses positive MACD histogram as the available proxy for
   improving histogram until previous-histogram state is added.
+- UltimateMathematicalMachineV5: dry-run 1-minute state machine using ATRP,
+  100-period Gaussian Z-score exhaustion, EMA3 trigonometric velocity,
+  3-candle time decay, and Fibonacci 0.236 ATR micro-trailing.
 
 ## Backtests
 
