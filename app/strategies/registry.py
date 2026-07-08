@@ -6,10 +6,16 @@ from typing import Protocol
 
 from app.signals import MultiTimeframeSignalSummary, TechnicalSignalGuide
 from app.strategies.breakout_scout import CoinPilotBreakoutScout
+from app.strategies.claude_breakout_hunter import ClaudeBreakoutHunter
+from app.strategies.claude_breakout_hunter_v2 import ClaudeBreakoutHunterV2
+from app.strategies.claude_dip_accumulator import ClaudeDipAccumulator
+from app.strategies.claude_mean_reversion_sniper import ClaudeMeanReversionSniper
+from app.strategies.claude_trend_rider import ClaudeTrendRider
 from app.strategies.gear_shifting_algo import CoinPilotGearShiftingAlgo
 from app.strategies.gear_shifting_algo_v4 import CoinPilotGearShiftingAlgoV4
 from app.strategies.grid_accumulation_scalper import CoinPilotGridAccumulationScalper
 from app.strategies.helpers import clean_user_label
+from app.strategies.micyu_bear_accumulation_period import MicyuBearAccumulationPeriod
 from app.strategies.no_martingale_guard import CoinPilotNoMartingaleGuard
 from app.strategies.reclaim import CoinPilotReclaim
 from app.strategies.trend_guard import CoinPilotTrendGuard
@@ -40,6 +46,12 @@ STRATEGY_REGISTRY: tuple[Strategy, ...] = (
     CoinPilotGearShiftingAlgo(),
     CoinPilotGearShiftingAlgoV4(),
     UltimateMathematicalMachineV5(),
+    ClaudeMeanReversionSniper(),
+    ClaudeTrendRider(),
+    ClaudeBreakoutHunter(),
+    ClaudeBreakoutHunterV2(),
+    ClaudeDipAccumulator(),
+    MicyuBearAccumulationPeriod(),
 )
 
 STRATEGIES = tuple(strategy.definition for strategy in STRATEGY_REGISTRY)

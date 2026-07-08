@@ -21,6 +21,12 @@ from app.strategies import (
     build_strategy_decision,
     strategy_by_slug,
 )
+from app.strategies.claude_breakout_hunter import ClaudeBreakoutHunter
+from app.strategies.claude_breakout_hunter_v2 import ClaudeBreakoutHunterV2
+from app.strategies.claude_dip_accumulator import ClaudeDipAccumulator
+from app.strategies.claude_mean_reversion_sniper import ClaudeMeanReversionSniper
+from app.strategies.claude_trend_rider import ClaudeTrendRider
+from app.strategies.micyu_bear_accumulation_period import MicyuBearAccumulationPeriod
 from app.strategies.ultimate_mathematical_machine_v5 import UltimateMathematicalMachineV5
 
 
@@ -33,6 +39,15 @@ BACKTEST_PERIODS = (90, 365, 730)
 ROLLING_CANDLE_WINDOW = 120
 MIN_CANDLES_FOR_SIGNALS = 60
 _SIGNAL_CACHE: dict[tuple[str, str, int, int], object] = {}
+
+CLAUDE_STATEFUL_MACHINES = {
+    "claude_mean_reversion_sniper": ClaudeMeanReversionSniper,
+    "claude_trend_rider": ClaudeTrendRider,
+    "claude_breakout_hunter": ClaudeBreakoutHunter,
+    "claude_breakout_hunter_v2": ClaudeBreakoutHunterV2,
+    "claude_dip_accumulator": ClaudeDipAccumulator,
+    "micyu_bear_accumulation_period": MicyuBearAccumulationPeriod,
+}
 
 
 @dataclass(frozen=True)
@@ -206,6 +221,17 @@ def run_strategy_backtest(
             starting_usdt=starting_usdt,
         )
 
+    if strategy.slug in CLAUDE_STATEFUL_MACHINES:
+        return _run_claude_stateful_backtest(
+            symbol=symbol,
+            strategy=strategy,
+            candles=candles,
+            interval=interval,
+            requested_days=requested_days,
+            available_days=available_days,
+            starting_usdt=starting_usdt,
+        )
+
     for index in range(MIN_CANDLES_FOR_SIGNALS - 1, len(candles)):
         window = candles[max(0, index - ROLLING_CANDLE_WINDOW + 1) : index + 1]
         candle = candles[index]
@@ -327,6 +353,90 @@ def _run_v5_stateful_backtest(
             base_bought = net_spend / decision.price
             usdt_balance -= spend
             base_balance += base_bought
+            trades.append(
+                BacktestTrade(
+                    timestamp_ms=candle.open_time_ms,
+                    action="SIMULATED_BUY",
+                    price=decision.price,
+                    usdt_balance=usdt_balance,
+                    base_balance=base_balance,
+                    reason=decision.reason,
+                )
+            )
+        elif decision.action == "SIMULATED_SELL" and decision.price is not None and base_balance > 0:
+            gross_usdt = base_balance * decision.price
+            fee = gross_usdt * DEFAULT_BACKTEST_FEE_RATE
+            usdt_balance += gross_usdt - fee
+            base_balance = Decimal("0")
+            trades.append(
+                BacktestTrade(
+                    timestamp_ms=candle.open_time_ms,
+                    action="SIMULATED_SELL",
+                    price=decision.price,
+                    usdt_balance=usdt_balance,
+                    base_balance=base_balance,
+                    reason=decision.reason,
+                )
+            )
+
+    last_close = candles[-1].close_price
+    ending_value = usdt_balance + (base_balance * last_close)
+    profit_loss = ending_value - starting_usdt
+    profit_loss_percent = (profit_loss / starting_usdt) * Decimal("100") if starting_usdt else Decimal("0")
+    return BacktestResult(
+        symbol=symbol,
+        strategy=strategy,
+        interval=interval,
+        requested_days=requested_days,
+        available_days=available_days,
+        starting_usdt=starting_usdt,
+        ending_value_usdt=ending_value,
+        profit_loss_usdt=profit_loss,
+        profit_loss_percent=profit_loss_percent,
+        trades=tuple(trades),
+        candles_used=len(candles),
+        skipped_reason=None,
+    )
+
+
+def _run_claude_stateful_backtest(
+    *,
+    symbol: str,
+    strategy: StrategyDefinition,
+    candles: tuple[BacktestCandle, ...],
+    interval: str,
+    requested_days: int,
+    available_days: Decimal | None,
+    starting_usdt: Decimal,
+) -> BacktestResult:
+    """Feed raw candles to a self-contained Claude machine with O(1) tick state."""
+
+    machine = CLAUDE_STATEFUL_MACHINES[strategy.slug]()
+    usdt_balance = starting_usdt
+    base_balance = Decimal("0")
+    trades: list[BacktestTrade] = []
+
+    for candle in candles:
+        decision = machine.on_candle_tick(
+            {
+                "open": candle.open_price,
+                "high": candle.high_price,
+                "low": candle.low_price,
+                "close": candle.close_price,
+                "volume": candle.volume,
+            }
+        )
+        if decision.action == "SIMULATED_BUY" and decision.price is not None and usdt_balance > 0:
+            spend = usdt_balance if decision.fraction is None else usdt_balance * decision.fraction
+            if spend <= 0:
+                continue
+            fee = spend * DEFAULT_BACKTEST_FEE_RATE
+            base_bought = (spend - fee) / decision.price
+            usdt_balance -= spend
+            base_balance += base_bought
+            record_fill = getattr(machine, "record_fill", None)
+            if record_fill is not None:
+                record_fill(usdt_spent=spend, base_bought=base_bought)
             trades.append(
                 BacktestTrade(
                     timestamp_ms=candle.open_time_ms,
