@@ -6,6 +6,7 @@ Telegram alerts. It uses stored public candles only and must not place orders.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -35,6 +36,14 @@ from app.telegram_notifier import (
 SIGNAL_STATE_PATH = Path("data/signal_state.json")
 SIGNAL_LOG_PREFIX = "SIGNAL"
 WATCHED_TIMEFRAME_INTERVALS = ("4h", "1d")
+
+# The watcher's shortest tracked candle is 4h, so checks are aligned to real
+# UTC 4-hour boundaries (00:00, 04:00, 08:00, 12:00, 16:00, 20:00) plus a
+# small buffer, instead of a fixed sleep interval. A fixed interval drifts
+# relative to actual candle closes depending on when the process started; a
+# wall-clock-aligned check always reads a complete, just-closed candle.
+CANDLE_ALIGNMENT_HOURS = 4
+CANDLE_CLOSE_BUFFER_SECONDS = 10
 
 
 def run_signal_watch_once(
@@ -73,19 +82,50 @@ def run_signal_watch_once(
     return 0
 
 
+def _seconds_until_next_candle_close(
+    *,
+    interval_hours: int = CANDLE_ALIGNMENT_HOURS,
+    buffer_seconds: int = CANDLE_CLOSE_BUFFER_SECONDS,
+    now: datetime | None = None,
+) -> float:
+    """Seconds until buffer_seconds after the next UTC interval_hours boundary.
+
+    Unlike a fixed sleep interval, this always lands shortly after a real
+    candle close (e.g. 00:00, 04:00, 08:00 UTC for a 4h interval),
+    regardless of when the process started.
+    """
+
+    current = now or datetime.now(timezone.utc)
+    boundary_hour = (current.hour // interval_hours) * interval_hours
+    candidate = current.replace(hour=boundary_hour, minute=0, second=0, microsecond=0)
+    candidate += timedelta(seconds=buffer_seconds)
+    while candidate <= current:
+        candidate += timedelta(hours=interval_hours)
+    return (candidate - current).total_seconds()
+
+
 def run_signal_watch_loop(
     *,
-    interval_seconds: int,
     state_path: Path = SIGNAL_STATE_PATH,
     send_telegram: bool = True,
 ) -> int:
-    """Run the signal watcher continuously until Ctrl+C."""
+    """Run the signal watcher continuously until Ctrl+C.
 
+    Checks are aligned to real UTC candle-close boundaries (see
+    CANDLE_ALIGNMENT_HOURS and CANDLE_CLOSE_BUFFER_SECONDS) rather than a
+    fixed sleep interval, so each check reads a complete, just-closed candle.
+    """
+
+    heartbeat_interval_seconds = CANDLE_ALIGNMENT_HOURS * 3600 + CANDLE_CLOSE_BUFFER_SECONDS
     print("CoinPilot signal watcher started.")
     print("Safety: public candle data only. No API key. No account access. No orders.")
-    print(f"Interval: {interval_seconds} seconds")
+    print(
+        f"Aligned to real UTC {CANDLE_ALIGNMENT_HOURS}-hour candle closes "
+        f"(+{CANDLE_CLOSE_BUFFER_SECONDS}s buffer)."
+    )
     try:
         while True:
+            time.sleep(_seconds_until_next_candle_close())
             try:
                 run_signal_watch_once(
                     state_path=state_path,
@@ -94,7 +134,7 @@ def run_signal_watch_loop(
                 write_success_heartbeat(
                     path=SIGNAL_WATCHER_HEALTH_PATH,
                     service="signal_watcher",
-                    interval_seconds=interval_seconds,
+                    interval_seconds=heartbeat_interval_seconds,
                     details={"symbols": list(PUBLIC_MARKET_WATCHLIST)},
                 )
             except Exception as exc:  # noqa: BLE001 - keep watcher alive.
@@ -103,10 +143,9 @@ def run_signal_watch_loop(
                 write_error_heartbeat(
                     path=SIGNAL_WATCHER_HEALTH_PATH,
                     service="signal_watcher",
-                    interval_seconds=interval_seconds,
+                    interval_seconds=heartbeat_interval_seconds,
                     error_message=message,
                 )
-            time.sleep(interval_seconds)
     except KeyboardInterrupt:
         print("Stopping CoinPilot signal watcher.")
         return 0

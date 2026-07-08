@@ -273,7 +273,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         send_telegram = not args.no_signal_telegram
         if args.watch:
             return run_signal_watch_loop(
-                interval_seconds=args.interval,
                 send_telegram=send_telegram,
             )
         return run_signal_watch_once(send_telegram=send_telegram)

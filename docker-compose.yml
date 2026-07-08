@@ -19,7 +19,7 @@ services:
         "--interval",
         "300",
         "--alert-threshold",
-        "0.5",
+        "2.5",
       ]
 
   binance-candles:
@@ -62,8 +62,6 @@ services:
         "app.main",
         "--watch-signals",
         "--watch",
-        "--interval",
-        "300",
       ]
 
   binance-dashboard:
