@@ -14,10 +14,15 @@ def build_alert_lines(
     *,
     alert_threshold_percent: Decimal,
     timestamp: str,
-) -> list[str]:
-    """Build local alert lines for prices crossing the configured threshold."""
+) -> tuple[list[str], set[str]]:
+    """Build local alert lines for prices crossing the configured threshold.
+
+    Also returns the set of symbols that triggered at least one alert line,
+    so callers can enrich just those symbols without string-parsing.
+    """
 
     alert_lines: list[str] = []
+    triggered_symbols: set[str] = set()
 
     for price in prices:
         previous_price = previous_prices.get(price.symbol)
@@ -31,8 +36,9 @@ def build_alert_lines(
                 f"{format_signed_percent(change_percent)} "
                 f"from {previous_price} to {price.price}"
             )
+            triggered_symbols.add(price.symbol)
 
-    return alert_lines
+    return alert_lines, triggered_symbols
 
 
 def format_signed_percent(value: Decimal) -> str:

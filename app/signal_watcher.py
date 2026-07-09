@@ -20,6 +20,7 @@ from app.dashboard import CHART_CANDLE_LIMIT, MULTI_TIMEFRAME_SUMMARY_INTERVALS
 from app.health import SIGNAL_WATCHER_HEALTH_PATH, write_error_heartbeat, write_success_heartbeat
 from app.indicators import build_indicator_snapshot
 from app.logger import append_market_price_log, current_timestamp
+from app.qualifying_readings import evaluate_qualifying_readings, format_qualifying_readings
 from app.signals import (
     MultiTimeframeSignalSummary,
     TechnicalSignalGuide,
@@ -35,7 +36,15 @@ from app.telegram_notifier import (
 
 SIGNAL_STATE_PATH = Path("data/signal_state.json")
 SIGNAL_LOG_PREFIX = "SIGNAL"
+STANDING_REPORT_LOG_PREFIX = "STANDING"
 WATCHED_TIMEFRAME_INTERVALS = ("4h", "1d")
+
+# Enrichment reads a wider set of timeframes than the "did something change"
+# comparison above, since a qualifying reading (RSI extreme, Bollinger band
+# touch, squeeze) is worth reporting even on a timeframe whose overall
+# signal didn't change. Enrichment only fires for symbols that already
+# triggered an alert from WATCHED_TIMEFRAME_INTERVALS above.
+ENRICHMENT_TIMEFRAME_INTERVALS = ("1h", "4h", "1d")
 
 # The watcher's shortest tracked candle is 4h, so checks are aligned to real
 # UTC 4-hour boundaries (00:00, 04:00, 08:00, 12:00, 16:00, 20:00) plus a
@@ -53,9 +62,9 @@ def run_signal_watch_once(
 ) -> int:
     """Compare current signals to previous local state and alert on changes."""
 
-    current_state = build_signal_state()
+    current_state, guides_by_symbol = build_signal_state()
     previous_state = _read_signal_state(state_path)
-    alert_lines = _build_alert_lines(previous_state, current_state)
+    alert_lines, triggered_symbols = _build_alert_lines(previous_state, current_state)
     _write_signal_state(state_path, current_state)
 
     if not previous_state:
@@ -70,14 +79,54 @@ def run_signal_watch_once(
         append_market_price_log([f"{current_timestamp()} {SIGNAL_LOG_PREFIX}: {message}"])
         return 0
 
+    enrichment_lines = _build_enrichment_lines(triggered_symbols, guides_by_symbol)
+    all_lines = list(alert_lines) + list(enrichment_lines)
+
     timestamp = current_timestamp()
-    log_lines = [f"{timestamp} {SIGNAL_LOG_PREFIX}: {line}" for line in alert_lines]
+    log_lines = [f"{timestamp} {SIGNAL_LOG_PREFIX}: {line}" for line in all_lines]
     for line in log_lines:
         print(line)
     append_market_price_log(log_lines)
 
     if send_telegram:
-        _send_signal_alert(alert_lines)
+        _send_signal_alert(all_lines)
+
+    return 0
+
+
+def run_standing_report_once(*, send_telegram: bool = True) -> int:
+    """Check every watchlist symbol and report only currently-qualifying readings.
+
+    Unlike run_signal_watch_once, this does not depend on anything having
+    changed. It always logs locally, but stays silent on Telegram when no
+    symbol currently qualifies, to avoid unconditional recurring noise.
+    """
+
+    _, guides_by_symbol = build_signal_state()
+    lines: list[str] = []
+    for symbol in PUBLIC_MARKET_WATCHLIST:
+        guides_by_interval = guides_by_symbol.get(symbol, {})
+        for interval in ENRICHMENT_TIMEFRAME_INTERVALS:
+            guide = guides_by_interval.get(interval)
+            if guide is None:
+                continue
+            readings = evaluate_qualifying_readings(symbol=symbol, interval=interval, guide=guide)
+            lines.extend(format_qualifying_readings(readings))
+
+    if not lines:
+        message = "Standing report checked all watchlist symbols: nothing currently qualifies."
+        print(message)
+        append_market_price_log([f"{current_timestamp()} {STANDING_REPORT_LOG_PREFIX}: {message}"])
+        return 0
+
+    timestamp = current_timestamp()
+    log_lines = [f"{timestamp} {STANDING_REPORT_LOG_PREFIX}: {line}" for line in lines]
+    for line in log_lines:
+        print(line)
+    append_market_price_log(log_lines)
+
+    if send_telegram:
+        _send_standing_report(lines)
 
     return 0
 
@@ -131,6 +180,7 @@ def run_signal_watch_loop(
                     state_path=state_path,
                     send_telegram=send_telegram,
                 )
+                run_standing_report_once(send_telegram=send_telegram)
                 write_success_heartbeat(
                     path=SIGNAL_WATCHER_HEALTH_PATH,
                     service="signal_watcher",
@@ -151,14 +201,21 @@ def run_signal_watch_loop(
         return 0
 
 
-def build_signal_state() -> dict[str, Any]:
-    """Build serializable signal state for all watchlist symbols."""
+def build_signal_state() -> tuple[dict[str, Any], dict[str, dict[str, TechnicalSignalGuide]]]:
+    """Build serializable signal state for all watchlist symbols.
+
+    Also returns the full per-symbol, per-interval guides so callers can
+    enrich alerts with qualifying-reading checks without recomputing
+    indicators a second time.
+    """
 
     state: dict[str, Any] = {"symbols": {}}
+    guides_by_symbol: dict[str, dict[str, TechnicalSignalGuide]] = {}
     for symbol in PUBLIC_MARKET_WATCHLIST:
         guides_by_interval = _build_guides_for_symbol(symbol)
         if not guides_by_interval:
             continue
+        guides_by_symbol[symbol] = guides_by_interval
         summary = build_multi_timeframe_signal_summary(
             symbol=symbol,
             guides_by_interval=guides_by_interval,
@@ -171,7 +228,7 @@ def build_signal_state() -> dict[str, Any]:
                 if interval in WATCHED_TIMEFRAME_INTERVALS
             },
         }
-    return state
+    return state, guides_by_symbol
 
 
 def _build_guides_for_symbol(symbol: str) -> dict[str, TechnicalSignalGuide]:
@@ -253,20 +310,53 @@ def _guide_state(guide: TechnicalSignalGuide) -> dict[str, Any]:
     }
 
 
-def _build_alert_lines(previous_state: dict[str, Any], current_state: dict[str, Any]) -> list[str]:
-    lines = []
+def _build_alert_lines(
+    previous_state: dict[str, Any],
+    current_state: dict[str, Any],
+) -> tuple[list[str], set[str]]:
+    """Return alert lines plus the set of symbols that triggered at least one."""
+
+    lines: list[str] = []
+    triggered_symbols: set[str] = set()
     previous_symbols = previous_state.get("symbols", {}) if isinstance(previous_state, dict) else {}
     current_symbols = current_state.get("symbols", {})
     if not isinstance(previous_symbols, dict) or not isinstance(current_symbols, dict):
-        return lines
+        return lines, triggered_symbols
 
     for symbol, current_symbol_state in current_symbols.items():
         previous_symbol_state = previous_symbols.get(symbol, {})
         if not isinstance(previous_symbol_state, dict):
             continue
-        lines.extend(_overall_alert_lines(symbol, previous_symbol_state, current_symbol_state))
-        lines.extend(_timeframe_alert_lines(symbol, previous_symbol_state, current_symbol_state))
-    return lines
+        overall_lines = _overall_alert_lines(symbol, previous_symbol_state, current_symbol_state)
+        timeframe_lines = _timeframe_alert_lines(symbol, previous_symbol_state, current_symbol_state)
+        if overall_lines or timeframe_lines:
+            triggered_symbols.add(symbol)
+        lines.extend(overall_lines)
+        lines.extend(timeframe_lines)
+    return lines, triggered_symbols
+
+
+def _build_enrichment_lines(
+    triggered_symbols: set[str],
+    guides_by_symbol: dict[str, dict[str, TechnicalSignalGuide]],
+) -> tuple[str, ...]:
+    """Append qualifying-reading lines only for symbols that already alerted.
+
+    A symbol only gets enrichment if WATCHED_TIMEFRAME_INTERVALS already
+    triggered an alert for it this cycle; enrichment itself never fires a
+    message on its own.
+    """
+
+    lines: list[str] = []
+    for symbol in sorted(triggered_symbols):
+        guides_by_interval = guides_by_symbol.get(symbol, {})
+        for interval in ENRICHMENT_TIMEFRAME_INTERVALS:
+            guide = guides_by_interval.get(interval)
+            if guide is None:
+                continue
+            readings = evaluate_qualifying_readings(symbol=symbol, interval=interval, guide=guide)
+            lines.extend(format_qualifying_readings(readings))
+    return tuple(lines)
 
 
 def _overall_alert_lines(
@@ -343,6 +433,19 @@ def _send_signal_alert(alert_lines: list[str]) -> None:
         send_telegram_message(message, config)
     except TelegramSendError as exc:
         print(f"Telegram signal alert failed: {exc}")
+
+
+def _send_standing_report(lines: list[str]) -> None:
+    config = load_telegram_config_from_env()
+    if config is None:
+        print("Telegram standing report not sent because Telegram env vars are missing.")
+        return
+
+    message = "\n".join(["CoinPilot Standing Report", "", *lines, "", "Advisory only. No automatic trade."])
+    try:
+        send_telegram_message(message, config)
+    except TelegramSendError as exc:
+        print(f"Telegram standing report failed: {exc}")
 
 
 def _read_signal_state(path: Path) -> dict[str, Any]:

@@ -31,6 +31,7 @@ from app.candle_store import (
 )
 from app.config import DEFAULT_COLLECTION_INTERVAL_SECONDS
 from app.dashboard import DEFAULT_DASHBOARD_HOST, DEFAULT_DASHBOARD_PORT, run_dashboard_server
+from app.fear_greed import run_fear_greed_report_loop, run_fear_greed_report_once
 from app.historical_candles import (
     DEFAULT_HISTORY_DAYS,
     DEFAULT_HISTORY_INTERVAL,
@@ -152,6 +153,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--no-signal-telegram",
         action="store_true",
         help="Do not send Telegram from --watch-signals even if Telegram env vars are configured.",
+    )
+    parser.add_argument(
+        "--fear-greed",
+        action="store_true",
+        help="Report the public Crypto Fear & Greed Index once daily. Market-wide, not per-symbol.",
+    )
+    parser.add_argument(
+        "--no-fear-greed-telegram",
+        action="store_true",
+        help="Do not send Telegram from --fear-greed even if Telegram env vars are configured.",
     )
     parser.add_argument(
         "--backtest",
@@ -276,6 +287,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 send_telegram=send_telegram,
             )
         return run_signal_watch_once(send_telegram=send_telegram)
+
+    if args.fear_greed:
+        send_telegram = not args.no_fear_greed_telegram
+        if args.watch:
+            return run_fear_greed_report_loop(send_telegram=send_telegram)
+        return run_fear_greed_report_once(send_telegram=send_telegram)
 
     if args.backtest:
         results = run_backtests(

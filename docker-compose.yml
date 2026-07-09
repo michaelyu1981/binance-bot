@@ -64,6 +64,26 @@ services:
         "--watch",
       ]
 
+  binance-fear-greed:
+    build:
+      context: .
+    image: binance-bot:local
+    restart: unless-stopped
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    command:
+      [
+        "python3",
+        "-m",
+        "app.main",
+        "--fear-greed",
+        "--watch",
+      ]
+
   binance-dashboard:
     profiles:
       - dashboard
