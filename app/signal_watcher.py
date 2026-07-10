@@ -27,6 +27,7 @@ from app.signals import (
     build_multi_timeframe_signal_summary,
     build_technical_signal_guide,
 )
+from app.strategies.helpers import shortest_timeframe_guide
 from app.telegram_notifier import (
     TelegramSendError,
     load_telegram_config_from_env,
@@ -64,7 +65,7 @@ def run_signal_watch_once(
 
     current_state, guides_by_symbol = build_signal_state()
     previous_state = _read_signal_state(state_path)
-    alert_lines, triggered_symbols = _build_alert_lines(previous_state, current_state)
+    alert_lines, triggered_symbols = _build_alert_lines(previous_state, current_state, guides_by_symbol)
     _write_signal_state(state_path, current_state)
 
     if not previous_state:
@@ -313,6 +314,7 @@ def _guide_state(guide: TechnicalSignalGuide) -> dict[str, Any]:
 def _build_alert_lines(
     previous_state: dict[str, Any],
     current_state: dict[str, Any],
+    guides_by_symbol: dict[str, dict[str, TechnicalSignalGuide]],
 ) -> tuple[list[str], set[str]]:
     """Return alert lines plus the set of symbols that triggered at least one."""
 
@@ -327,8 +329,9 @@ def _build_alert_lines(
         previous_symbol_state = previous_symbols.get(symbol, {})
         if not isinstance(previous_symbol_state, dict):
             continue
-        overall_lines = _overall_alert_lines(symbol, previous_symbol_state, current_symbol_state)
-        timeframe_lines = _timeframe_alert_lines(symbol, previous_symbol_state, current_symbol_state)
+        guides_by_interval = guides_by_symbol.get(symbol, {})
+        overall_lines = _overall_alert_lines(symbol, previous_symbol_state, current_symbol_state, guides_by_interval)
+        timeframe_lines = _timeframe_alert_lines(symbol, previous_symbol_state, current_symbol_state, guides_by_interval)
         if overall_lines or timeframe_lines:
             triggered_symbols.add(symbol)
         lines.extend(overall_lines)
@@ -363,6 +366,7 @@ def _overall_alert_lines(
     symbol: str,
     previous_symbol_state: dict[str, Any],
     current_symbol_state: dict[str, Any],
+    guides_by_interval: dict[str, TechnicalSignalGuide],
 ) -> list[str]:
     previous = previous_symbol_state.get("overall", {})
     current = current_symbol_state.get("overall", {})
@@ -376,7 +380,8 @@ def _overall_alert_lines(
     return [
         (
             f"{symbol} Overall changed: {', '.join(changes)}. "
-            f"Score {current.get('score', 'n/a')}/100. {current.get('final_decision', '')}"
+            f"Score {current.get('score', 'n/a')}/100. {current.get('final_decision', '')}. "
+            f"Price {_current_price_text(guides_by_interval)}"
         )
     ]
 
@@ -385,6 +390,7 @@ def _timeframe_alert_lines(
     symbol: str,
     previous_symbol_state: dict[str, Any],
     current_symbol_state: dict[str, Any],
+    guides_by_interval: dict[str, TechnicalSignalGuide],
 ) -> list[str]:
     previous_timeframes = previous_symbol_state.get("timeframes", {})
     current_timeframes = current_symbol_state.get("timeframes", {})
@@ -399,13 +405,23 @@ def _timeframe_alert_lines(
             continue
         changes = _field_changes(previous, current, ("signal", "bias", "market_type"))
         if changes:
+            guide = guides_by_interval.get(interval)
+            price_text = guide.current_price if guide is not None and guide.current_price is not None else "n/a"
             lines.append(
                 (
                     f"{symbol} {interval} changed: {', '.join(changes)}. "
-                    f"Score {current.get('score', 'n/a')}/100. {current.get('final_decision', '')}"
+                    f"Score {current.get('score', 'n/a')}/100. {current.get('final_decision', '')}. "
+                    f"Price {price_text}"
                 )
             )
     return lines
+
+
+def _current_price_text(guides_by_interval: dict[str, TechnicalSignalGuide]) -> str:
+    guide = shortest_timeframe_guide(guides_by_interval)
+    if guide is None or guide.current_price is None:
+        return "n/a"
+    return str(guide.current_price)
 
 
 def _field_changes(

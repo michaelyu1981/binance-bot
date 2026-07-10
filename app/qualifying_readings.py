@@ -74,6 +74,17 @@ def evaluate_qualifying_readings(
                 label=f"{symbol} {interval} Bollinger squeeze{width_text} - watch for a breakout",
             )
         )
+        if guide.bollinger_upper is not None and guide.bollinger_lower is not None and guide.current_price is not None:
+            readings.append(
+                QualifyingReading(
+                    symbol=symbol,
+                    interval=interval,
+                    label=(
+                        f"{symbol} {interval} squeeze range: high {guide.bollinger_upper} / "
+                        f"low {guide.bollinger_lower} / current {guide.current_price}"
+                    ),
+                )
+            )
 
     return tuple(readings)
 
