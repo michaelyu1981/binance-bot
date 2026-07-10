@@ -181,6 +181,35 @@ class RollingSum:
             self.total -= self._values.popleft()
 
 
+class RollingFraction:
+    """Rolling fraction of truthy pushes over a fixed window.
+
+    Used to answer "what fraction of the last N candles were X" (e.g. what
+    fraction of the trailing two years were spent in a BEAR regime) with
+    O(1) updates instead of rescanning history on every tick.
+    """
+
+    def __init__(self, window: int) -> None:
+        self.window = window
+        self._values: deque[bool] = deque()
+        self._true_count = 0
+
+    def push(self, flag: bool) -> None:
+        self._values.append(flag)
+        if flag:
+            self._true_count += 1
+        if len(self._values) > self.window:
+            removed = self._values.popleft()
+            if removed:
+                self._true_count -= 1
+
+    @property
+    def fraction(self) -> Decimal | None:
+        if not self._values:
+            return None
+        return Decimal(self._true_count) / Decimal(len(self._values))
+
+
 class DonchianRegime:
     """Donchian-style market regime from new-high vs new-low frequency.
 
@@ -265,3 +294,97 @@ class RollingMax:
         if not self._entries:
             return None
         return self._count - 1 - self._entries[0][0]
+
+
+class RollingVwap:
+    """Rolling volume-weighted average price and deviation bands.
+
+    Crypto trades 24/7 with no session open, so this uses a fixed rolling
+    window (e.g. 24 candles on 1h data) instead of a session reset -- the
+    practical analogue of "session VWAP" for a market with no natural
+    session boundary. Typical price is (high + low + close) / 3.
+    """
+
+    def __init__(self, window: int) -> None:
+        self.window = window
+        self._entries: deque[tuple[Decimal, Decimal]] = deque()
+        self._sum_pv = Decimal("0")
+        self._sum_v = Decimal("0")
+        self._sum_pv2 = Decimal("0")
+
+    def update(self, *, high: Decimal, low: Decimal, close: Decimal, volume: Decimal) -> Decimal | None:
+        typical_price = (high + low + close) / Decimal("3")
+        self._entries.append((typical_price, volume))
+        self._sum_pv += typical_price * volume
+        self._sum_v += volume
+        self._sum_pv2 += volume * typical_price * typical_price
+        if len(self._entries) > self.window:
+            old_price, old_volume = self._entries.popleft()
+            self._sum_pv -= old_price * old_volume
+            self._sum_v -= old_volume
+            self._sum_pv2 -= old_volume * old_price * old_price
+        return self.vwap
+
+    @property
+    def is_full(self) -> bool:
+        return len(self._entries) >= self.window
+
+    @property
+    def vwap(self) -> Decimal | None:
+        if self._sum_v <= 0:
+            return None
+        return self._sum_pv / self._sum_v
+
+    @property
+    def deviation(self) -> Decimal | None:
+        """Volume-weighted standard deviation of typical price from VWAP."""
+
+        if self._sum_v <= 0:
+            return None
+        mean = self._sum_pv / self._sum_v
+        mean_of_squares = self._sum_pv2 / self._sum_v
+        variance = mean_of_squares - (mean * mean)
+        if variance <= 0:
+            return Decimal("0")
+        return Decimal(str(math.sqrt(float(variance))))
+
+
+class SwingPointDetector:
+    """Confirms swing highs and swing lows using a symmetric fractal window.
+
+    A candle `window` positions back is confirmed as a swing high once
+    `window` further candles have all had a lower high (and the `window`
+    candles before it already did, by construction). This is how swing
+    points are actually read on a chart -- a peak is only known once price
+    has moved away from it -- so confirmation always lags by `window`
+    candles.
+    """
+
+    def __init__(self, window: int) -> None:
+        self.window = window
+        self._highs: deque[Decimal] = deque()
+        self._lows: deque[Decimal] = deque()
+
+    def update(self, *, high: Decimal, low: Decimal) -> tuple[Decimal | None, Decimal | None]:
+        """Returns (confirmed_swing_high, confirmed_swing_low) for this tick, or (None, None)."""
+
+        self._highs.append(high)
+        self._lows.append(low)
+        max_length = (2 * self.window) + 1
+        if len(self._highs) > max_length:
+            self._highs.popleft()
+            self._lows.popleft()
+
+        if len(self._highs) < max_length:
+            return None, None
+
+        mid = self.window
+        candidate_high = self._highs[mid]
+        candidate_low = self._lows[mid]
+        is_swing_high = all(
+            self._highs[i] <= candidate_high for i in range(max_length) if i != mid
+        )
+        is_swing_low = all(
+            self._lows[i] >= candidate_low for i in range(max_length) if i != mid
+        )
+        return (candidate_high if is_swing_high else None), (candidate_low if is_swing_low else None)

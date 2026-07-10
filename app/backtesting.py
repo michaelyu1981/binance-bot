@@ -13,21 +13,12 @@ from pathlib import Path
 import sqlite3
 
 from app.config import PUBLIC_MARKET_WATCHLIST
-from app.indicators import build_indicator_snapshot
-from app.signals import build_multi_timeframe_signal_summary, build_technical_signal_guide
-from app.strategies import (
-    STRATEGIES,
-    StrategyDefinition,
-    build_strategy_decision,
-    strategy_by_slug,
-)
-from app.strategies.claude_breakout_hunter import ClaudeBreakoutHunter
-from app.strategies.claude_breakout_hunter_v2 import ClaudeBreakoutHunterV2
-from app.strategies.claude_dip_accumulator import ClaudeDipAccumulator
-from app.strategies.claude_mean_reversion_sniper import ClaudeMeanReversionSniper
-from app.strategies.claude_trend_rider import ClaudeTrendRider
-from app.strategies.micyu_bear_accumulation_period import MicyuBearAccumulationPeriod
-from app.strategies.ultimate_mathematical_machine_v5 import UltimateMathematicalMachineV5
+from app.strategies import STRATEGIES, StrategyDefinition, strategy_by_slug
+from app.strategies.claude_triad_confluence import ClaudeTriadConfluence
+from app.strategies.claude_triad_confluence_v2 import ClaudeTriadConfluenceV2
+from app.strategies.claude_triad_confluence_v3 import ClaudeTriadConfluenceV3
+from app.strategies.claude_triad_confluence_v4 import ClaudeTriadConfluenceV4
+from app.strategies.claude_triad_confluence_v5 import ClaudeTriadConfluenceV5
 
 
 DEFAULT_BACKTEST_STARTING_USDT = Decimal("100")
@@ -36,17 +27,14 @@ DEFAULT_BACKTEST_INTERVAL = "1h"
 DEFAULT_BACKTEST_DAYS = 90
 DEFAULT_BACKTEST_DB_PATH = Path("data/historical_market_data.sqlite3")
 BACKTEST_PERIODS = (90, 365, 730)
-ROLLING_CANDLE_WINDOW = 120
 MIN_CANDLES_FOR_SIGNALS = 60
-_SIGNAL_CACHE: dict[tuple[str, str, int, int], object] = {}
 
 CLAUDE_STATEFUL_MACHINES = {
-    "claude_mean_reversion_sniper": ClaudeMeanReversionSniper,
-    "claude_trend_rider": ClaudeTrendRider,
-    "claude_breakout_hunter": ClaudeBreakoutHunter,
-    "claude_breakout_hunter_v2": ClaudeBreakoutHunterV2,
-    "claude_dip_accumulator": ClaudeDipAccumulator,
-    "micyu_bear_accumulation_period": MicyuBearAccumulationPeriod,
+    "claude_triad_confluence": ClaudeTriadConfluence,
+    "claude_triad_confluence_v2": ClaudeTriadConfluenceV2,
+    "claude_triad_confluence_v3": ClaudeTriadConfluenceV3,
+    "claude_triad_confluence_v4": ClaudeTriadConfluenceV4,
+    "claude_triad_confluence_v5": ClaudeTriadConfluenceV5,
 }
 
 
@@ -99,7 +87,6 @@ def run_backtests(
 ) -> tuple[BacktestResult, ...]:
     """Run deterministic local backtests for symbols and strategies."""
 
-    _SIGNAL_CACHE.clear()
     strategies = STRATEGIES if strategy_slug == "all" else (strategy_by_slug(strategy_slug),)
     results: list[BacktestResult] = []
     for symbol in symbols:
@@ -204,198 +191,26 @@ def run_strategy_backtest(
             reason=f"Only {available_days:.1f} days available locally for requested {requested_days} days.",
         )
 
-    usdt_balance = starting_usdt
-    base_balance = Decimal("0")
-    average_entry = Decimal("0")
-    peak_value = starting_usdt
-    trades: list[BacktestTrade] = []
-
-    if strategy.slug == "ultimate_mathematical_machine_v5":
-        return _run_v5_stateful_backtest(
+    if strategy.slug not in CLAUDE_STATEFUL_MACHINES:
+        return _skipped_result(
             symbol=symbol,
             strategy=strategy,
-            candles=candles,
             interval=interval,
             requested_days=requested_days,
             available_days=available_days,
             starting_usdt=starting_usdt,
+            candles_used=len(candles),
+            reason=f"No stateful backtest registered for strategy '{strategy.slug}'.",
         )
 
-    if strategy.slug in CLAUDE_STATEFUL_MACHINES:
-        return _run_claude_stateful_backtest(
-            symbol=symbol,
-            strategy=strategy,
-            candles=candles,
-            interval=interval,
-            requested_days=requested_days,
-            available_days=available_days,
-            starting_usdt=starting_usdt,
-        )
-
-    for index in range(MIN_CANDLES_FOR_SIGNALS - 1, len(candles)):
-        window = candles[max(0, index - ROLLING_CANDLE_WINDOW + 1) : index + 1]
-        candle = candles[index]
-        decision = _strategy_decision_for_window(
-            symbol=symbol,
-            strategy=strategy,
-            interval=interval,
-            window=window,
-            is_in_position=base_balance > 0,
-            active_gear=_active_gear_for_backtest(strategy, base_balance),
-        )
-        current_value = usdt_balance + (base_balance * candle.close_price)
-        peak_value = max(peak_value, current_value)
-
-        if base_balance == 0 and usdt_balance > 0 and _is_entry_verdict(decision.verdict):
-            spend = usdt_balance
-            fee = spend * DEFAULT_BACKTEST_FEE_RATE
-            net_spend = spend - fee
-            base_balance = net_spend / candle.close_price
-            usdt_balance = Decimal("0")
-            average_entry = candle.close_price
-            trades.append(
-                BacktestTrade(
-                    timestamp_ms=candle.open_time_ms,
-                    action="SIMULATED_BUY",
-                    price=candle.close_price,
-                    usdt_balance=usdt_balance,
-                    base_balance=base_balance,
-                    reason=decision.verdict,
-                )
-            )
-            continue
-
-        if base_balance > 0 and _should_exit(
-            strategy=strategy,
-            verdict=decision.verdict,
-            close_price=candle.close_price,
-            average_entry=average_entry,
-        ):
-            gross_usdt = base_balance * candle.close_price
-            fee = gross_usdt * DEFAULT_BACKTEST_FEE_RATE
-            usdt_balance = gross_usdt - fee
-            base_balance = Decimal("0")
-            average_entry = Decimal("0")
-            trades.append(
-                BacktestTrade(
-                    timestamp_ms=candle.open_time_ms,
-                    action="SIMULATED_SELL",
-                    price=candle.close_price,
-                    usdt_balance=usdt_balance,
-                    base_balance=base_balance,
-                    reason=decision.verdict,
-                )
-            )
-
-    last_close = candles[-1].close_price
-    ending_value = usdt_balance + (base_balance * last_close)
-    profit_loss = ending_value - starting_usdt
-    profit_loss_percent = (profit_loss / starting_usdt) * Decimal("100") if starting_usdt else Decimal("0")
-    return BacktestResult(
+    return _run_claude_stateful_backtest(
         symbol=symbol,
         strategy=strategy,
+        candles=candles,
         interval=interval,
         requested_days=requested_days,
         available_days=available_days,
         starting_usdt=starting_usdt,
-        ending_value_usdt=ending_value,
-        profit_loss_usdt=profit_loss,
-        profit_loss_percent=profit_loss_percent,
-        trades=tuple(trades),
-        candles_used=len(candles),
-        skipped_reason=None,
-    )
-
-
-def _run_v5_stateful_backtest(
-    *,
-    symbol: str,
-    strategy: StrategyDefinition,
-    candles: tuple[BacktestCandle, ...],
-    interval: str,
-    requested_days: int,
-    available_days: Decimal | None,
-    starting_usdt: Decimal,
-) -> BacktestResult:
-    machine = UltimateMathematicalMachineV5(max_allocation_usdt=starting_usdt)
-    usdt_balance = starting_usdt
-    base_balance = Decimal("0")
-    trades: list[BacktestTrade] = []
-
-    for index in range(100, len(candles)):
-        window = candles[max(0, index - ROLLING_CANDLE_WINDOW + 1) : index + 1]
-        candle = candles[index]
-        closes = tuple(item.close_price for item in window)
-        ema3 = _ema(closes, 3)
-        previous_ema3 = _ema(closes[:-1], 3)
-        atr14 = _atr14(window)
-        if ema3 is None or previous_ema3 is None or atr14 is None:
-            continue
-
-        decision = machine.on_candle_tick(
-            {
-                "close": candle.close_price,
-                "low": candle.low_price,
-            },
-            {
-                "atr14": atr14,
-                "ema3": ema3,
-                "previous_ema3": previous_ema3,
-                "closes": closes,
-            },
-        )
-        if decision.action == "SIMULATED_BUY" and decision.usdt_amount is not None and decision.price is not None:
-            spend = min(usdt_balance, decision.usdt_amount)
-            if spend <= 0:
-                continue
-            fee = spend * DEFAULT_BACKTEST_FEE_RATE
-            net_spend = spend - fee
-            base_bought = net_spend / decision.price
-            usdt_balance -= spend
-            base_balance += base_bought
-            trades.append(
-                BacktestTrade(
-                    timestamp_ms=candle.open_time_ms,
-                    action="SIMULATED_BUY",
-                    price=decision.price,
-                    usdt_balance=usdt_balance,
-                    base_balance=base_balance,
-                    reason=decision.reason,
-                )
-            )
-        elif decision.action == "SIMULATED_SELL" and decision.price is not None and base_balance > 0:
-            gross_usdt = base_balance * decision.price
-            fee = gross_usdt * DEFAULT_BACKTEST_FEE_RATE
-            usdt_balance += gross_usdt - fee
-            base_balance = Decimal("0")
-            trades.append(
-                BacktestTrade(
-                    timestamp_ms=candle.open_time_ms,
-                    action="SIMULATED_SELL",
-                    price=decision.price,
-                    usdt_balance=usdt_balance,
-                    base_balance=base_balance,
-                    reason=decision.reason,
-                )
-            )
-
-    last_close = candles[-1].close_price
-    ending_value = usdt_balance + (base_balance * last_close)
-    profit_loss = ending_value - starting_usdt
-    profit_loss_percent = (profit_loss / starting_usdt) * Decimal("100") if starting_usdt else Decimal("0")
-    return BacktestResult(
-        symbol=symbol,
-        strategy=strategy,
-        interval=interval,
-        requested_days=requested_days,
-        available_days=available_days,
-        starting_usdt=starting_usdt,
-        ending_value_usdt=ending_value,
-        profit_loss_usdt=profit_loss,
-        profit_loss_percent=profit_loss_percent,
-        trades=tuple(trades),
-        candles_used=len(candles),
-        skipped_reason=None,
     )
 
 
@@ -424,6 +239,7 @@ def _run_claude_stateful_backtest(
                 "low": candle.low_price,
                 "close": candle.close_price,
                 "volume": candle.volume,
+                "open_time_ms": candle.open_time_ms,
             }
         )
         if decision.action == "SIMULATED_BUY" and decision.price is not None and usdt_balance > 0:
@@ -504,127 +320,11 @@ def format_backtest_results(results: tuple[BacktestResult, ...]) -> str:
     return "\n".join(lines)
 
 
-def _strategy_decision_for_window(
-    *,
-    symbol: str,
-    strategy: StrategyDefinition,
-    interval: str,
-    window: tuple[BacktestCandle, ...],
-    is_in_position: bool = False,
-    active_gear: int = 0,
-):
-    cache_key = (symbol, interval, window[-1].open_time_ms, len(window))
-    cached = _SIGNAL_CACHE.get(cache_key)
-    if cached is None:
-        highs = tuple(candle.high_price for candle in window)
-        lows = tuple(candle.low_price for candle in window)
-        closes = tuple(candle.close_price for candle in window)
-        volumes = tuple(candle.volume for candle in window)
-        snapshot = build_indicator_snapshot(
-            highs=highs,
-            lows=lows,
-            closes=closes,
-            volumes=volumes,
-        )
-        guide = build_technical_signal_guide(
-            symbol=symbol,
-            highs=highs,
-            lows=lows,
-            closes=closes,
-            volumes=volumes,
-            snapshot=snapshot,
-        )
-        summary = build_multi_timeframe_signal_summary(
-            symbol=symbol,
-            guides_by_interval={interval: guide},
-        )
-        cached = (guide, summary)
-        _SIGNAL_CACHE[cache_key] = cached
-    guide, summary = cached
-    return build_strategy_decision(
-        strategy=strategy,
-        symbol=symbol,
-        summary=summary,
-        guides_by_interval={interval: guide},
-        is_in_position=is_in_position,
-        active_gear=active_gear,
-    )
-
-
-def _active_gear_for_backtest(strategy: StrategyDefinition, base_balance: Decimal) -> int:
-    if base_balance <= 0:
-        return 0
-    if strategy.slug == "coinpilot_gear_shifting_algo_v4":
-        return 1
-    return 0
-
-
-def _is_entry_verdict(verdict: str) -> bool:
-    return verdict in {
-        "BUY WATCH",
-        "BREAKOUT WATCH",
-        "RECLAIM WATCH",
-        "SIMULATED BUY TIER 1 WATCH",
-        "GEAR 1 SNAP-BACK WATCH",
-        "GEAR 2 MOMENTUM WATCH",
-        "V4 GEAR 1 WATCH + GEAR 2 PRIMED",
-        "V4 GEAR 1 SNAP-BACK WATCH",
-        "V4 GEAR 2 MOMENTUM WATCH",
-    }
-
-
-def _should_exit(
-    *,
-    strategy: StrategyDefinition,
-    verdict: str,
-    close_price: Decimal,
-    average_entry: Decimal,
-) -> bool:
-    if verdict in {"RISK-OFF", "DO NOT AVERAGE DOWN", "BLOCKED_BY_RISK", "AVOID"}:
-        return True
-    target = Decimal("1.02")
-    if strategy.slug == "coinpilot_grid_accumulation_scalper_v1":
-        target = Decimal("1.008")
-    elif strategy.slug in {"coinpilot_gear_shifting_algo_v1", "coinpilot_gear_shifting_algo_v4"}:
-        target = Decimal("1.005")
-    return average_entry > 0 and close_price >= average_entry * target
-
-
 def _available_days(candles: tuple[BacktestCandle, ...]) -> Decimal | None:
     if len(candles) < 2:
         return None
     seconds = Decimal(candles[-1].open_time_ms - candles[0].open_time_ms) / Decimal("1000")
     return seconds / Decimal("86400")
-
-
-def _ema(values: tuple[Decimal, ...], period: int) -> Decimal | None:
-    if len(values) < period:
-        return None
-    multiplier = Decimal("2") / Decimal(period + 1)
-    ema = sum(values[:period], Decimal("0")) / Decimal(period)
-    for value in values[period:]:
-        ema = (value - ema) * multiplier + ema
-    return ema
-
-
-def _atr14(candles: tuple[BacktestCandle, ...]) -> Decimal | None:
-    if len(candles) < 15:
-        return None
-    true_ranges = []
-    for index in range(1, len(candles)):
-        current = candles[index]
-        previous = candles[index - 1]
-        true_ranges.append(
-            max(
-                current.high_price - current.low_price,
-                abs(current.high_price - previous.close_price),
-                abs(current.low_price - previous.close_price),
-            )
-        )
-    if len(true_ranges) < 14:
-        return None
-    recent = true_ranges[-14:]
-    return sum(recent, Decimal("0")) / Decimal("14")
 
 
 def _skipped_result(
