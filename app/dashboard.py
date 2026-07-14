@@ -63,6 +63,7 @@ from app.live_bot_state import (
     read_live_bot_runtime,
     write_live_bot_config,
 )
+from app.logger import format_currency_usd
 from app.indicators import (
     IndicatorSnapshot,
     build_indicator_snapshot,
@@ -922,13 +923,13 @@ def _render_live_bot_activity(
                 f'<div class="negative">{escape(str(info["error"]))}</div></div>'
             )
             continue
-        current_price = info.get("current_price") or "n/a"
-        current_value = info.get("current_value") or "n/a"
+        current_price = _format_optional_currency(info.get("current_price"))
+        current_value = _format_optional_currency(info.get("current_value"))
         tiles.append(
             "<div class=\"runtime-symbol-tile\">"
             f"<strong>{escape(symbol)}</strong>"
-            f"<div>Price: {escape(str(current_price))}</div>"
-            f"<div>Value: {escape(str(current_value))} USDT</div>"
+            f"<div>Price: {escape(current_price)}</div>"
+            f"<div>Value: {escape(current_value)}</div>"
             "</div>"
         )
     if not tiles:
@@ -2975,6 +2976,17 @@ def _format_optional_price(price: Decimal | None) -> str:
     if price is None:
         return "Unavailable"
     return _format_axis_price(price)
+
+
+def _format_optional_currency(raw: Any) -> str:
+    """Format a runtime JSON string value (e.g. from live_bot_runtime.json) as USD currency."""
+
+    if raw is None:
+        return "n/a"
+    try:
+        return format_currency_usd(Decimal(str(raw)))
+    except (InvalidOperation, ValueError):
+        return "n/a"
 
 
 def _format_optional_decimal(value: Decimal | None) -> str:

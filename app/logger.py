@@ -34,6 +34,18 @@ def format_price_usd(value: Decimal) -> str:
     return f"${value:,.3f}"
 
 
+def format_currency_usd(value: Decimal) -> str:
+    """Format a USD balance/value for dashboard display: $ sign, thousands separators, 2 decimal places.
+
+    E.g. Decimal("1003.692877294123570623") -> "$1,003.69". Used for account
+    balances and simulated portfolio values, where 2 decimal places is the
+    standard currency convention (unlike `format_price_usd`'s 3 decimal
+    places, which is for asset unit prices).
+    """
+
+    return f"${value:,.2f}"
+
+
 def format_market_price_lines(
     prices: Iterable[MarketPrice],
     *,
