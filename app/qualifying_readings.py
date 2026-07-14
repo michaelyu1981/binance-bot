@@ -37,13 +37,15 @@ def evaluate_qualifying_readings(
 
     readings: list[QualifyingReading] = []
 
+    price_text = f" (price {guide.current_price})" if guide.current_price is not None else ""
+
     if guide.rsi14 is not None:
         if guide.rsi14 >= RSI_OVERBOUGHT:
             readings.append(
                 QualifyingReading(
                     symbol=symbol,
                     interval=interval,
-                    label=f"{symbol} {interval} RSI {guide.rsi14:.1f} Overbought (>= {RSI_OVERBOUGHT})",
+                    label=f"{symbol} {interval} RSI {guide.rsi14:.1f} Overbought (>= {RSI_OVERBOUGHT}){price_text}",
                 )
             )
         elif guide.rsi14 <= RSI_OVERSOLD:
@@ -51,7 +53,7 @@ def evaluate_qualifying_readings(
                 QualifyingReading(
                     symbol=symbol,
                     interval=interval,
-                    label=f"{symbol} {interval} RSI {guide.rsi14:.1f} Oversold (<= {RSI_OVERSOLD})",
+                    label=f"{symbol} {interval} RSI {guide.rsi14:.1f} Oversold (<= {RSI_OVERSOLD}){price_text}",
                 )
             )
 
@@ -60,7 +62,7 @@ def evaluate_qualifying_readings(
             QualifyingReading(
                 symbol=symbol,
                 interval=interval,
-                label=f"{symbol} {interval} price {guide.bollinger_price_location}",
+                label=f"{symbol} {interval} {guide.bollinger_price_location}{price_text}",
             )
         )
 
@@ -71,7 +73,7 @@ def evaluate_qualifying_readings(
             QualifyingReading(
                 symbol=symbol,
                 interval=interval,
-                label=f"{symbol} {interval} Bollinger squeeze{width_text} - watch for a breakout",
+                label=f"{symbol} {interval} Bollinger squeeze{width_text} - watch for a breakout{price_text}",
             )
         )
         if guide.bollinger_upper is not None and guide.bollinger_lower is not None and guide.current_price is not None:
