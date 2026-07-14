@@ -27,7 +27,9 @@ from pathlib import Path
 import time
 from typing import Any
 
+from app.backtesting import DEFAULT_BACKTEST_DB_PATH
 from app.binance_reader import BinancePublicMarketError, Candle, fetch_public_candles
+from app.candle_store import upsert_candles
 from app.health import write_error_heartbeat, write_success_heartbeat
 from app.live_bot_state import (
     LIVE_BOT_DEFINITIONS,
@@ -42,7 +44,9 @@ from app.strategies.claude_triad_confluence_v5 import ClaudeTriadConfluenceV5
 LIVE_PAPER_TRADER_HEALTH_PATH = Path("data/health/live_paper_trader.json")
 POLL_SECONDS = 120
 FEE_RATE = Decimal("0.001")
-RECENT_TRADES_KEPT = 8
+# Kept in the runtime JSON so the dashboard's scrollable trade-history table
+# has real history to show, not just the last handful of fills.
+RECENT_TRADES_KEPT = 300
 
 
 def _build_rsi_machine(capital: Decimal, params: dict[str, Any]) -> ClaudeModifiedMartingaleRSI:
@@ -100,6 +104,7 @@ def _seed_session(session: dict[str, Any], symbol: str, interval: str) -> None:
         history = fetch_public_candles(symbol, interval, limit=SEED_CANDLE_LIMIT)
     except BinancePublicMarketError:
         return
+    upsert_candles(history, db_path=DEFAULT_BACKTEST_DB_PATH)
     if len(history) < 2:
         return
     # Exclude the last candle: it may still be forming and will be re-fetched
@@ -164,6 +169,36 @@ def _process_candle(session: dict[str, Any], candle: Candle) -> None:
         session["trade_log"] = session["trade_log"][-RECENT_TRADES_KEPT:]
 
 
+def _position_reference_lines(machine: Any, take_profit_percent: Decimal | None) -> list[dict[str, str]]:
+    """Reference lines to overlay on this bot's chart, if a position is currently open.
+
+    The Martingale ladders (RSI/ATR) track an average cost basis and a fixed
+    take-profit percent above it. Triad Confluence V5 has no ladder -- it
+    tracks a single entry price and an ATR-based stop instead. Each family
+    gets the overlay that actually matches what it's waiting on.
+    """
+
+    average_price = getattr(machine, "average_price", None)
+    if average_price is not None and average_price > 0:
+        lines = [{"label": "Avg Entry", "price": str(average_price)}]
+        if take_profit_percent is not None:
+            take_profit_price = average_price * (Decimal("1") + take_profit_percent / Decimal("100"))
+            lines.append({"label": "Take Profit", "price": str(take_profit_price)})
+        return lines
+
+    if getattr(machine, "is_in_position", False):
+        entry_price = getattr(machine, "entry_price", None)
+        stop_price = getattr(machine, "stop_price", None)
+        lines = []
+        if entry_price:
+            lines.append({"label": "Entry", "price": str(entry_price)})
+        if stop_price:
+            lines.append({"label": "Stop", "price": str(stop_price)})
+        return lines
+
+    return []
+
+
 def run_live_paper_trading_once() -> dict[str, Any]:
     """Run one cycle across every enabled bot/symbol. Returns the runtime payload written."""
 
@@ -180,6 +215,9 @@ def run_live_paper_trading_once() -> dict[str, Any]:
         params = bot_config.get("params") or {}
         symbols = bot_config.get("symbols") or []
 
+        take_profit_percent_raw = params.get("take_profit_percent")
+        take_profit_percent = Decimal(str(take_profit_percent_raw)) if take_profit_percent_raw is not None else None
+
         bot_runtime: dict[str, Any] = {}
         for symbol in symbols:
             session = _get_session(slug, symbol, capital=capital, params=params, interval=interval)
@@ -188,6 +226,7 @@ def run_live_paper_trading_once() -> dict[str, Any]:
             except BinancePublicMarketError as exc:
                 bot_runtime[symbol] = {"error": str(exc)}
                 continue
+            upsert_candles(candles, db_path=DEFAULT_BACKTEST_DB_PATH)
 
             if len(candles) >= 2:
                 latest_closed = candles[-2]  # the last entry may still be the currently-forming candle
@@ -206,7 +245,8 @@ def run_live_paper_trading_once() -> dict[str, Any]:
                 "base_balance": str(session["base_balance"]),
                 "current_price": str(last_price) if last_price is not None else None,
                 "current_value": str(current_value),
-                "recent_trades": session["trade_log"][-5:],
+                "reference_lines": _position_reference_lines(session["machine"], take_profit_percent),
+                "recent_trades": session["trade_log"],
             }
         runtime[slug] = bot_runtime
 

@@ -46,6 +46,7 @@ LIVE_BOT_DEFINITIONS: dict[str, dict[str, Any]] = {
         "summary": "28-level linear-lot DCA ladder gated by RSI(14) < 50, with bull-capture re-entry.",
         "recommended_interval": "4h",
         "recommended_interval_label": "4 Hour",
+        "query_param": "rsi_symbol",
         "default_params": {
             "take_profit_percent": "4.5",
             "rsi_entry_max": "50",
@@ -64,6 +65,7 @@ LIVE_BOT_DEFINITIONS: dict[str, dict[str, Any]] = {
         "summary": "7-layer (1 BO + 6 SO) ladder with ATR(14)-based safety-order spacing.",
         "recommended_interval": "4h",
         "recommended_interval_label": "4 Hour",
+        "query_param": "atr_symbol",
         "default_params": {
             "take_profit_percent": "2.5",
             "atr_multiplier": "2.2",
@@ -80,6 +82,7 @@ LIVE_BOT_DEFINITIONS: dict[str, dict[str, Any]] = {
         "summary": "Pattern + calendar + regime + momentum confluence swing trader with an ATR stop/trail.",
         "recommended_interval": "1w",
         "recommended_interval_label": "1 Week",
+        "query_param": "confluence_symbol",
         "default_params": {},
         "param_labels": {},
     },

@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from app.backtesting import (
     BACKTEST_PERIODS,
     DEFAULT_BACKTEST_DAYS,
+    DEFAULT_BACKTEST_DB_PATH,
     DEFAULT_BACKTEST_INTERVAL,
     BacktestResult,
     run_backtests,
@@ -239,7 +240,11 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
 
             query = parse_qs(parsed_url.query)
             if parsed_url.path == "/live-bots":
-                body = render_live_bots_view()
+                selected_symbols = {
+                    slug: query.get(definition["query_param"], [""])[0]
+                    for slug, definition in LIVE_BOT_DEFINITIONS.items()
+                }
+                body = render_live_bots_view(selected_symbols=selected_symbols)
             elif parsed_url.path == "/charts":
                 interval = _parse_chart_interval(query.get("interval", [DEFAULT_CHART_INTERVAL])[0])
                 body = render_chart_view(interval=interval)
@@ -751,9 +756,10 @@ def render_account_view() -> str:
 """
 
 
-def render_live_bots_view() -> str:
+def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> str:
     """Render the Live Bot Trader tab: on/off + tunable settings for the 3 approved paper-trading bots."""
 
+    selected_symbols = selected_symbols or {}
     config = read_live_bot_config()
     runtime = read_live_bot_runtime()
     cards = "".join(
@@ -762,6 +768,7 @@ def render_live_bots_view() -> str:
             definition=definition,
             bot_config=config.get(slug, {}),
             bot_runtime=runtime.get(slug, {}),
+            selected_symbol=selected_symbols.get(slug, ""),
         )
         for slug, definition in LIVE_BOT_DEFINITIONS.items()
     )
@@ -802,6 +809,7 @@ def _render_live_bot_card(
     definition: dict[str, Any],
     bot_config: dict[str, Any],
     bot_runtime: dict[str, Any],
+    selected_symbol: str,
 ) -> str:
     enabled = bool(bot_config.get("enabled", False))
     interval = str(bot_config.get("interval", definition["recommended_interval"]))
@@ -841,7 +849,18 @@ def _render_live_bot_card(
         f'<label>{escape(label)}<input name="param_{escape(key)}" value="{escape(str(params.get(key, "")))}"></label>'
         for key, label in definition["param_labels"].items()
     )
-    runtime_panel = _render_live_bot_runtime(bot_runtime) if enabled else ""
+    live_section = (
+        _render_live_bot_activity(
+            slug=slug,
+            definition=definition,
+            interval=interval,
+            symbols=symbols,
+            bot_runtime=bot_runtime,
+            selected_symbol=selected_symbol,
+        )
+        if enabled
+        else ""
+    )
 
     return f"""
     <section class="panel bot-card">
@@ -872,19 +891,29 @@ def _render_live_bot_card(
           <button type="submit">Save Settings</button>
         </div>
       </form>
-      {runtime_panel}
+      {live_section}
     </section>
     """
 
 
-def _render_live_bot_runtime(bot_runtime: dict[str, Any]) -> str:
+def _render_live_bot_activity(
+    *,
+    slug: str,
+    definition: dict[str, Any],
+    interval: str,
+    symbols: list[str],
+    bot_runtime: dict[str, Any],
+    selected_symbol: str,
+) -> str:
     if not bot_runtime:
         return (
             '<div class="runtime-panel muted">No live status yet -- '
             "waiting for the paper-trading loop's next cycle (checks every couple of minutes).</div>"
         )
+
     tiles: list[str] = []
-    for symbol, info in bot_runtime.items():
+    for symbol in symbols:
+        info = bot_runtime.get(symbol)
         if not isinstance(info, dict):
             continue
         if "error" in info:
@@ -895,27 +924,77 @@ def _render_live_bot_runtime(bot_runtime: dict[str, Any]) -> str:
             continue
         current_price = info.get("current_price") or "n/a"
         current_value = info.get("current_value") or "n/a"
-        recent_trades = info.get("recent_trades") or []
-        last_trade_html = ""
-        if recent_trades:
-            last = recent_trades[-1]
-            last_trade_html = (
-                f'<div class="muted">Last: {escape(str(last.get("action", "")))} '
-                f'@ {escape(str(last.get("price", "")))}</div>'
-            )
         tiles.append(
             "<div class=\"runtime-symbol-tile\">"
             f"<strong>{escape(symbol)}</strong>"
             f"<div>Price: {escape(str(current_price))}</div>"
             f"<div>Value: {escape(str(current_value))} USDT</div>"
-            f"{last_trade_html}"
             "</div>"
         )
     if not tiles:
         return '<div class="runtime-panel muted">No live status yet.</div>'
+
+    query_param = definition["query_param"]
+    selectable_symbols = [symbol for symbol in symbols if symbol in bot_runtime]
+    if selected_symbol not in selectable_symbols:
+        selected_symbol = selectable_symbols[0] if selectable_symbols else ""
+
+    chart_section = ""
+    if selected_symbol:
+        coin_tabs = (
+            "".join(
+                f'<a class="{"active" if symbol == selected_symbol else ""}" '
+                f'href="/live-bots?{urlencode({query_param: symbol})}">{escape(symbol)}</a>'
+                for symbol in selectable_symbols
+            )
+            if len(selectable_symbols) > 1
+            else ""
+        )
+        symbol_info = bot_runtime.get(selected_symbol, {})
+        reference_lines = symbol_info.get("reference_lines") or []
+        candles = _load_bot_chart_candles(symbol=selected_symbol, interval=interval)
+        chart_svg = _render_live_bot_chart_svg(candles, reference_lines)
+        trade_table = _render_trade_history_table(symbol_info.get("recent_trades") or [])
+        coin_tabs_html = f'<div class="nav" style="margin-bottom:10px;">{coin_tabs}</div>' if coin_tabs else ""
+        chart_section = (
+            '<div class="bot-chart-section">'
+            f'<h4>{escape(selected_symbol)} {escape(interval)} Chart</h4>'
+            f"{coin_tabs_html}"
+            f'<div class="bot-chart-wrap">{chart_svg}</div>'
+            "<h4>Trade History</h4>"
+            f"{trade_table}"
+            "</div>"
+        )
+
     return (
         '<div class="runtime-panel"><h4>Live Paper Status</h4>'
-        f'<div class="runtime-symbol-grid">{"".join(tiles)}</div></div>'
+        f'<div class="runtime-symbol-grid">{"".join(tiles)}</div>'
+        f"{chart_section}"
+        "</div>"
+    )
+
+
+def _render_trade_history_table(trades: list[dict[str, Any]]) -> str:
+    if not trades:
+        return '<p class="muted">No simulated trades yet for this coin.</p>'
+
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(_format_axis_time(int(trade.get('timestamp_ms', 0))))}</td>"
+        f'<td class="{"positive" if trade.get("action") == "SIMULATED_BUY" else "negative"}">'
+        f'{escape(str(trade.get("action", "")).replace("SIMULATED_", ""))}</td>'
+        f"<td>{escape(_format_axis_price(Decimal(str(trade.get('price', '0')))))}</td>"
+        f"<td>{escape(str(trade.get('reason', '')))}</td>"
+        "</tr>"
+        for trade in reversed(trades)
+    )
+    return (
+        '<div class="trade-history-scroll">'
+        '<table class="summary-table"><thead><tr>'
+        "<th>Time</th><th>Action</th><th>Price</th><th>Trigger</th>"
+        "</tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        "</div>"
     )
 
 
@@ -1392,6 +1471,33 @@ def _shared_page_css() -> str:
       background: #fbfcfe;
       font-size: 13px;
     }
+    .bot-chart-section { margin-top: 16px; }
+    .bot-chart-section h4 {
+      margin: 14px 0 8px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .bot-chart-wrap {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .bot-chart-svg { width: 100%; height: auto; display: block; }
+    .trade-history-scroll {
+      max-height: 340px;
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .trade-history-scroll table { margin-top: 0; }
+    .trade-history-scroll thead th {
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      z-index: 1;
+    }
     @media (max-width: 760px) {
       main, header, .topbar { padding: 16px; }
       .signal-head, .signal-detail-grid { grid-template-columns: 1fr; }
@@ -1520,6 +1626,54 @@ def _load_multi_timeframe_series() -> dict[str, dict[str, ChartSeries]]:
             pass
 
     return series_by_symbol
+
+
+def _load_bot_chart_candles(*, symbol: str, interval: str, limit: int = 100) -> tuple[ChartCandle, ...]:
+    """Load recent candles for a Live Bot Trader chart.
+
+    Reads the same local store `app/backtesting.py` and the paper-trading
+    loop both use (`data/historical_market_data.sqlite3`), not the live
+    price-monitor's `market_data.sqlite3` -- the paper-trading loop persists
+    every candle it fetches there specifically so this chart always has
+    something to show for whatever interval a bot is configured to trade on
+    (including 4h/1w, which the live collector doesn't gather).
+    """
+
+    if not DEFAULT_BACKTEST_DB_PATH.exists():
+        return ()
+    try:
+        connection = sqlite3.connect(DEFAULT_BACKTEST_DB_PATH)
+        rows = connection.execute(
+            """
+            SELECT symbol, interval, open_time_ms, open, high, low, close, volume
+            FROM candles
+            WHERE symbol = ? AND interval = ?
+            ORDER BY open_time_ms DESC
+            LIMIT ?
+            """,
+            (symbol, interval, limit),
+        ).fetchall()
+    except sqlite3.Error:
+        return ()
+    finally:
+        try:
+            connection.close()
+        except UnboundLocalError:
+            pass
+
+    return tuple(
+        ChartCandle(
+            symbol=row[0],
+            interval=row[1],
+            open_time_ms=int(row[2]),
+            open_price=Decimal(row[3]),
+            high_price=Decimal(row[4]),
+            low_price=Decimal(row[5]),
+            close_price=Decimal(row[6]),
+            volume=Decimal(row[7]),
+        )
+        for row in reversed(rows)
+    )
 
 
 def _render_chart_series(series: ChartSeries) -> str:
@@ -2462,6 +2616,114 @@ def _render_atr_panel(candles: tuple[ChartCandle, ...]) -> str:
         f"<text x=\"{(width - chart_right):.2f}\" y=\"18\" font-size=\"13\" fill=\"#9333ea\" text-anchor=\"end\">ATR 14 {_format_axis_price(latest_atr)}</text>"
         "</svg>"
         "</div>"
+    )
+
+
+def _render_live_bot_chart_svg(
+    candles: tuple[ChartCandle, ...],
+    reference_lines: list[dict[str, str]],
+) -> str:
+    """Compact static candlestick chart for a Live Bot Trader card.
+
+    Deliberately simpler than `_render_sparkline` (no EMA/SMA/Bollinger
+    overlays, no JS tooltips) -- this renders once per bot per selected coin,
+    so it stays lightweight. Reference lines (avg entry/take-profit, or
+    entry/stop) are drawn as dashed horizontal lines with a label, and are
+    included in the price range so they're always visible even if the
+    current price has moved away from them.
+    """
+
+    if len(candles) < 2:
+        return '<p class="muted">No local candle history yet for this coin/interval -- the paper-trading loop backfills this on its next cycle.</p>'
+
+    width = Decimal("760")
+    height = Decimal("220")
+    chart_left = Decimal("70")
+    chart_right = Decimal("16")
+    chart_top = Decimal("14")
+    chart_bottom = Decimal("28")
+    chart_width = width - chart_left - chart_right
+    chart_height = height - chart_top - chart_bottom
+
+    candle_prices = [
+        price
+        for candle in candles
+        for price in (candle.open_price, candle.high_price, candle.low_price, candle.close_price)
+    ]
+    reference_prices = [Decimal(line["price"]) for line in reference_lines if line.get("price")]
+    low = min(candle_prices + reference_prices)
+    high = max(candle_prices + reference_prices)
+    spread = high - low
+    if spread == 0:
+        spread = Decimal("1")
+    # Pad a little so lines/candles at the extreme edges aren't clipped.
+    pad = spread * Decimal("0.06")
+    low -= pad
+    high += pad
+    spread = high - low
+
+    def y_for(value: Decimal) -> Decimal:
+        return chart_top + ((high - value) / spread) * chart_height
+
+    def x_for(index: int) -> Decimal:
+        if len(candles) == 1:
+            return chart_left + (chart_width / Decimal("2"))
+        return chart_left + (Decimal(index) / Decimal(len(candles) - 1)) * chart_width
+
+    candle_width = max(Decimal("2"), min(Decimal("8"), (chart_width / Decimal(len(candles))) * Decimal("0.6")))
+    candle_half_width = candle_width / Decimal("2")
+
+    candle_elements = []
+    for index, candle in enumerate(candles):
+        x = x_for(index)
+        close_y = y_for(candle.close_price)
+        open_y = y_for(candle.open_price)
+        high_y = y_for(candle.high_price)
+        low_y = y_for(candle.low_price)
+        color = "#087f5b" if candle.close_price >= candle.open_price else "#c92a2a"
+        body_y = min(open_y, close_y)
+        body_height = max(abs(close_y - open_y), Decimal("1"))
+        candle_elements.append(
+            f'<line x1="{x:.2f}" y1="{high_y:.2f}" x2="{x:.2f}" y2="{low_y:.2f}" stroke="{color}" stroke-width="1.2" />'
+            f'<rect x="{(x - candle_half_width):.2f}" y="{body_y:.2f}" width="{candle_width:.2f}" '
+            f'height="{body_height:.2f}" fill="{color}" opacity="0.85" />'
+        )
+
+    reference_elements = []
+    reference_colors = {"Avg Entry": "#1f6feb", "Entry": "#1f6feb", "Take Profit": "#087f5b", "Stop": "#c92a2a"}
+    for line in reference_lines:
+        price = Decimal(line["price"])
+        y = y_for(price)
+        color = reference_colors.get(line.get("label", ""), "#647084")
+        reference_elements.append(
+            f'<line x1="{chart_left:.2f}" y1="{y:.2f}" x2="{(width - chart_right):.2f}" y2="{y:.2f}" '
+            f'stroke="{color}" stroke-width="1.4" stroke-dasharray="5,4" />'
+            f'<text x="{(width - chart_right - Decimal("4")):.2f}" y="{(y - Decimal("4")):.2f}" '
+            f'font-size="11" fill="{color}" text-anchor="end">{escape(line.get("label", ""))} '
+            f'{escape(_format_axis_price(price))}</text>'
+        )
+
+    price_ticks = tuple(high - ((spread / Decimal("4")) * Decimal(index)) for index in range(5))
+    price_labels = "".join(
+        f'<text x="8" y="{(y_for(tick) + Decimal("4")):.2f}" font-size="11" fill="#647084">'
+        f'{escape(_format_axis_price(tick))}</text>'
+        for tick in price_ticks
+    )
+    time_labels = (
+        f'<text x="{chart_left:.2f}" y="{(height - Decimal("6")):.2f}" font-size="11" fill="#647084">'
+        f'{escape(_format_axis_time(candles[0].open_time_ms))}</text>'
+        f'<text x="{(width - chart_right):.2f}" y="{(height - Decimal("6")):.2f}" font-size="11" '
+        f'fill="#647084" text-anchor="end">{escape(_format_axis_time(candles[-1].open_time_ms))}</text>'
+    )
+
+    return (
+        f'<svg class="bot-chart-svg" viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet">'
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#fbfcfe" />'
+        f'{price_labels}'
+        f'{"".join(candle_elements)}'
+        f'{"".join(reference_elements)}'
+        f'{time_labels}'
+        "</svg>"
     )
 
 
