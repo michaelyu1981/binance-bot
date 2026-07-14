@@ -19,7 +19,7 @@ from app.config import PUBLIC_MARKET_WATCHLIST
 from app.dashboard import CHART_CANDLE_LIMIT, MULTI_TIMEFRAME_SUMMARY_INTERVALS
 from app.health import SIGNAL_WATCHER_HEALTH_PATH, write_error_heartbeat, write_success_heartbeat
 from app.indicators import build_indicator_snapshot
-from app.logger import append_market_price_log, current_timestamp
+from app.logger import append_market_price_log, current_timestamp, format_price_usd
 from app.qualifying_readings import evaluate_qualifying_readings, format_qualifying_readings
 from app.signals import (
     MultiTimeframeSignalSummary,
@@ -406,7 +406,9 @@ def _timeframe_alert_lines(
         changes = _field_changes(previous, current, ("signal", "bias", "market_type"))
         if changes:
             guide = guides_by_interval.get(interval)
-            price_text = guide.current_price if guide is not None and guide.current_price is not None else "n/a"
+            price_text = (
+                format_price_usd(guide.current_price) if guide is not None and guide.current_price is not None else "n/a"
+            )
             lines.append(
                 (
                     f"{symbol} {interval} changed: {', '.join(changes)}. "
@@ -421,7 +423,7 @@ def _current_price_text(guides_by_interval: dict[str, TechnicalSignalGuide]) -> 
     guide = shortest_timeframe_guide(guides_by_interval)
     if guide is None or guide.current_price is None:
         return "n/a"
-    return str(guide.current_price)
+    return format_price_usd(guide.current_price)
 
 
 def _field_changes(

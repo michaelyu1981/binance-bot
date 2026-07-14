@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from app.logger import format_price_usd
 from app.signals import TechnicalSignalGuide
 
 
@@ -37,7 +38,7 @@ def evaluate_qualifying_readings(
 
     readings: list[QualifyingReading] = []
 
-    price_text = f" (price {guide.current_price})" if guide.current_price is not None else ""
+    price_text = f" (price {format_price_usd(guide.current_price)})" if guide.current_price is not None else ""
 
     if guide.rsi14 is not None:
         if guide.rsi14 >= RSI_OVERBOUGHT:
@@ -82,8 +83,8 @@ def evaluate_qualifying_readings(
                     symbol=symbol,
                     interval=interval,
                     label=(
-                        f"{symbol} {interval} squeeze range: high {guide.bollinger_upper} / "
-                        f"low {guide.bollinger_lower} / current {guide.current_price}"
+                        f"{symbol} {interval} squeeze range: high {format_price_usd(guide.bollinger_upper)} / "
+                        f"low {format_price_usd(guide.bollinger_lower)} / current {format_price_usd(guide.current_price)}"
                     ),
                 )
             )

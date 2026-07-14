@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Iterable
 
@@ -19,6 +20,18 @@ def current_timestamp() -> str:
     """Return the current Philippine time timestamp with UTC+8 offset."""
 
     return datetime.now(PHILIPPINE_TIME).isoformat(timespec="seconds")
+
+
+def format_price_usd(value: Decimal) -> str:
+    """Format a price for reports: $ sign, thousands separators, 3 decimal places.
+
+    E.g. Decimal("12345678.901234") -> "$12,345,678.901". Raw Binance prices
+    carry up to 8 decimal places, which clutters Telegram messages -- this is
+    the single formatting point every report/alert should use instead of
+    interpolating a Decimal directly.
+    """
+
+    return f"${value:,.3f}"
 
 
 def format_market_price_lines(
