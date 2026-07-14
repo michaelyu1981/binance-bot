@@ -178,12 +178,15 @@ Before any live Spot work:
 
 ## Current Project Status
 
-Current status: public-data only.
+Current status: public-data plus read-only account access.
 
-No Binance account API key is present.
+A read-only Binance account API key is present on Hermes, used only by
+`app/binance_account.py`, `app/dashboard.py`, and the `--account-summary` CLI
+flag in `app/main.py` for read-only portfolio/balance viewing.
 
-No live trading is enabled.
+No live trading is enabled (`ENABLE_LIVE_TRADING=false`, `DRY_RUN=true`,
+`BOT_MODE=read_only` on Hermes).
 
-No account access is enabled.
-
-No buy/sell or order endpoints are enabled.
+No buy/sell or order endpoints exist anywhere in the codebase (verified by
+searching the deployed `app/` directory on Hermes for
+`create_order`/`place_order`/order-endpoint calls -- none found).

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import base64
 import hashlib
 import hmac
@@ -15,7 +15,7 @@ import os
 import re
 import sqlite3
 import time
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from app.backtesting import (
@@ -54,6 +54,13 @@ from app.summary import (
     MarketSummary,
     PriceLogEntry,
     build_market_summary,
+)
+from app.live_bot_state import (
+    LIVE_BOT_DEFINITIONS,
+    VALID_INTERVALS,
+    read_live_bot_config,
+    read_live_bot_runtime,
+    write_live_bot_config,
 )
 from app.indicators import (
     IndicatorSnapshot,
@@ -191,10 +198,16 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             parsed_url = urlparse(self.path)
-            if parsed_url.path != "/login":
-                self.send_error(404, "Not found")
+            if parsed_url.path == "/login":
+                self._handle_login()
                 return
-            self._handle_login()
+            if parsed_url.path == "/live-bots/toggle":
+                self._handle_live_bot_toggle()
+                return
+            if parsed_url.path == "/live-bots/save":
+                self._handle_live_bot_save()
+                return
+            self.send_error(404, "Not found")
 
         def _serve_dashboard(self, *, include_body: bool) -> None:
             parsed_url = urlparse(self.path)
@@ -215,6 +228,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 "/algorithms",
                 "/backtests",
                 "/account",
+                "/live-bots",
             ):
                 self.send_error(404, "Not found")
                 return
@@ -224,7 +238,9 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             query = parse_qs(parsed_url.query)
-            if parsed_url.path == "/charts":
+            if parsed_url.path == "/live-bots":
+                body = render_live_bots_view()
+            elif parsed_url.path == "/charts":
                 interval = _parse_chart_interval(query.get("interval", [DEFAULT_CHART_INTERVAL])[0])
                 body = render_chart_view(interval=interval)
             elif parsed_url.path == "/advisory":
@@ -270,6 +286,63 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 include_body=True,
                 status=401,
             )
+
+        def _handle_live_bot_toggle(self) -> None:
+            if _is_auth_required() and not _is_authenticated(self.headers.get("Cookie", "")):
+                self._redirect("/login")
+                return
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(content_length).decode("utf-8")
+            form = parse_qs(body)
+            slug = form.get("slug", [""])[0]
+            action = form.get("action", [""])[0]
+
+            if slug in LIVE_BOT_DEFINITIONS:
+                config = read_live_bot_config()
+                if slug in config:
+                    config[slug]["enabled"] = action == "on"
+                    write_live_bot_config(config)
+
+            self.send_response(303)
+            self.send_header("Location", "/live-bots")
+            self.end_headers()
+
+        def _handle_live_bot_save(self) -> None:
+            if _is_auth_required() and not _is_authenticated(self.headers.get("Cookie", "")):
+                self._redirect("/login")
+                return
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(content_length).decode("utf-8")
+            form = parse_qs(body)
+            slug = form.get("slug", [""])[0]
+
+            if slug in LIVE_BOT_DEFINITIONS:
+                config = read_live_bot_config()
+                if slug in config:
+                    bot_config = config[slug]
+
+                    interval = form.get("interval", [bot_config["interval"]])[0]
+                    if interval in VALID_INTERVALS:
+                        bot_config["interval"] = interval
+
+                    capital_raw = form.get("capital_per_symbol", [bot_config["capital_per_symbol"]])[0]
+                    if _is_positive_decimal(capital_raw):
+                        bot_config["capital_per_symbol"] = capital_raw
+
+                    symbols = [item for item in form.get("symbols", []) if item in PUBLIC_MARKET_WATCHLIST]
+                    if symbols:
+                        bot_config["symbols"] = symbols
+
+                    for key in LIVE_BOT_DEFINITIONS[slug]["param_labels"]:
+                        raw_value = form.get(f"param_{key}", [None])[0]
+                        if raw_value is not None and _is_positive_decimal(raw_value):
+                            bot_config["params"][key] = raw_value
+
+                    write_live_bot_config(config)
+
+            self.send_response(303)
+            self.send_header("Location", "/live-bots")
+            self.end_headers()
 
         def _handle_logout(self) -> None:
             self.send_response(303)
@@ -678,6 +751,174 @@ def render_account_view() -> str:
 """
 
 
+def render_live_bots_view() -> str:
+    """Render the Live Bot Trader tab: on/off + tunable settings for the 3 approved paper-trading bots."""
+
+    config = read_live_bot_config()
+    runtime = read_live_bot_runtime()
+    cards = "".join(
+        _render_live_bot_card(
+            slug=slug,
+            definition=definition,
+            bot_config=config.get(slug, {}),
+            bot_runtime=runtime.get(slug, {}),
+        )
+        for slug, definition in LIVE_BOT_DEFINITIONS.items()
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <title>CoinPilot Live Bot Trader</title>
+  <style>{_shared_page_css()}</style>
+</head>
+<body>
+  <header>
+    <h1>CoinPilot Live Bot Trader</h1>
+    <div class="muted">Paper trading only. No real Binance orders are placed from this page.</div>
+  </header>
+  {_render_nav("live-bots")}
+  <main>
+    <section class="panel safety-banner" style="margin-bottom:18px;">
+      <strong>Paper trading, not live trading.</strong>
+      Turning a bot ON below starts a simulated position priced off live market data using virtual funds --
+      it never sends a real order to Binance. Enabling real order execution is a separate, explicitly gated
+      step; see <code>docs/binance-api-key-policy.md</code>.
+    </section>
+    <div class="bot-grid">
+      {cards}
+    </div>
+  </main>
+</body>
+</html>
+"""
+
+
+def _render_live_bot_card(
+    *,
+    slug: str,
+    definition: dict[str, Any],
+    bot_config: dict[str, Any],
+    bot_runtime: dict[str, Any],
+) -> str:
+    enabled = bool(bot_config.get("enabled", False))
+    interval = str(bot_config.get("interval", definition["recommended_interval"]))
+    recommended_interval = definition["recommended_interval"]
+    recommended_label = definition["recommended_interval_label"]
+    capital = str(bot_config.get("capital_per_symbol", "1000"))
+    symbols = bot_config.get("symbols") or list(PUBLIC_MARKET_WATCHLIST)
+    params = bot_config.get("params", {})
+
+    status_class = "bot-status-on" if enabled else "bot-status-off"
+    status_label = "ON" if enabled else "OFF"
+    toggle_label = "Turn Off" if enabled else "Turn On"
+    toggle_action = "off" if enabled else "on"
+
+    if interval == recommended_interval:
+        timeframe_note = (
+            f'<div class="bot-note bot-note-good">&#10003; Running on {escape(recommended_label)} '
+            "-- the timeframe this bot was tested and validated on.</div>"
+        )
+    else:
+        timeframe_note = (
+            f'<div class="bot-note bot-note-warn">&#9888; Tested and validated on '
+            f"<strong>{escape(recommended_label)}</strong> candles. Currently set to {escape(interval)} -- "
+            f"switch to {escape(recommended_label)} for the results this bot was tuned around.</div>"
+        )
+
+    interval_options = "".join(
+        f'<option value="{escape(item)}" {"selected" if item == interval else ""}>{escape(item)}</option>'
+        for item in VALID_INTERVALS
+    )
+    symbol_checkboxes = "".join(
+        f'<label class="checkbox-label"><input type="checkbox" name="symbols" value="{escape(item)}" '
+        f'{"checked" if item in symbols else ""}> {escape(item)}</label>'
+        for item in PUBLIC_MARKET_WATCHLIST
+    )
+    param_inputs = "".join(
+        f'<label>{escape(label)}<input name="param_{escape(key)}" value="{escape(str(params.get(key, "")))}"></label>'
+        for key, label in definition["param_labels"].items()
+    )
+    runtime_panel = _render_live_bot_runtime(bot_runtime) if enabled else ""
+
+    return f"""
+    <section class="panel bot-card">
+      <div class="bot-card-head">
+        <div class="bot-card-title">
+          <h3>{escape(definition['name'])}</h3>
+          <span class="bot-status-badge {status_class}">{status_label}</span>
+        </div>
+        <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
+          <input type="hidden" name="slug" value="{escape(slug)}">
+          <input type="hidden" name="action" value="{toggle_action}">
+          <button type="submit" class="bot-toggle-btn {status_class}">{toggle_label}</button>
+        </form>
+      </div>
+      <p class="muted">{escape(definition['summary'])}</p>
+      {timeframe_note}
+      <form method="post" action="/live-bots/save" class="param-form">
+        <input type="hidden" name="slug" value="{escape(slug)}">
+        <label>Candle Interval
+          <select name="interval">{interval_options}</select>
+        </label>
+        <label>Capital per Symbol (USDT)
+          <input name="capital_per_symbol" value="{escape(capital)}">
+        </label>
+        {param_inputs}
+        <div class="symbol-checkbox-group">{symbol_checkboxes}</div>
+        <div class="param-actions">
+          <button type="submit">Save Settings</button>
+        </div>
+      </form>
+      {runtime_panel}
+    </section>
+    """
+
+
+def _render_live_bot_runtime(bot_runtime: dict[str, Any]) -> str:
+    if not bot_runtime:
+        return (
+            '<div class="runtime-panel muted">No live status yet -- '
+            "waiting for the paper-trading loop's next cycle (checks every couple of minutes).</div>"
+        )
+    tiles: list[str] = []
+    for symbol, info in bot_runtime.items():
+        if not isinstance(info, dict):
+            continue
+        if "error" in info:
+            tiles.append(
+                f'<div class="runtime-symbol-tile"><strong>{escape(symbol)}</strong>'
+                f'<div class="negative">{escape(str(info["error"]))}</div></div>'
+            )
+            continue
+        current_price = info.get("current_price") or "n/a"
+        current_value = info.get("current_value") or "n/a"
+        recent_trades = info.get("recent_trades") or []
+        last_trade_html = ""
+        if recent_trades:
+            last = recent_trades[-1]
+            last_trade_html = (
+                f'<div class="muted">Last: {escape(str(last.get("action", "")))} '
+                f'@ {escape(str(last.get("price", "")))}</div>'
+            )
+        tiles.append(
+            "<div class=\"runtime-symbol-tile\">"
+            f"<strong>{escape(symbol)}</strong>"
+            f"<div>Price: {escape(str(current_price))}</div>"
+            f"<div>Value: {escape(str(current_value))} USDT</div>"
+            f"{last_trade_html}"
+            "</div>"
+        )
+    if not tiles:
+        return '<div class="runtime-panel muted">No live status yet.</div>'
+    return (
+        '<div class="runtime-panel"><h4>Live Paper Status</h4>'
+        f'<div class="runtime-symbol-grid">{"".join(tiles)}</div></div>'
+    )
+
+
 def render_advisory_view(*, symbol: str, advisor: str) -> str:
     """Render modular advisory-board commentary from deterministic signals."""
 
@@ -1061,12 +1302,104 @@ def _shared_page_css() -> str:
       font: inherit;
       font-weight: 700;
     }
+    .safety-banner {
+      border-color: var(--accent);
+      background: rgba(31, 111, 235, 0.06);
+    }
+    .bot-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+    .bot-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .bot-card-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .bot-card-title h3 { margin: 0; font-size: 17px; }
+    .bot-status-badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .bot-status-on { background: rgba(8, 127, 91, 0.12); color: var(--good); }
+    .bot-status-off { background: rgba(100, 112, 132, 0.14); color: var(--muted); }
+    .bot-toggle-form { margin: 0; }
+    .bot-toggle-btn {
+      margin-top: 0;
+      width: auto;
+      padding: 8px 16px;
+      white-space: nowrap;
+    }
+    .bot-toggle-btn.bot-status-on { background: #fff5f5; border-color: var(--bad); color: var(--bad); }
+    .bot-toggle-btn.bot-status-off { background: var(--accent); border-color: var(--accent); color: white; }
+    .bot-note {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      border: 1px solid var(--line);
+    }
+    .bot-note-good { border-color: rgba(8, 127, 91, 0.35); background: rgba(8, 127, 91, 0.07); color: var(--good); }
+    .bot-note-warn { border-color: #ffd8a8; background: #fff9db; color: #7c4a03; }
+    .param-form {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+      align-items: end;
+    }
+    .param-form label { margin-top: 0; font-size: 12px; }
+    .param-form input, .param-form select { margin-top: 4px; }
+    .symbol-checkbox-group {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding-top: 4px;
+    }
+    .checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text);
+      margin: 0;
+      font-size: 13px;
+      font-weight: normal;
+    }
+    .checkbox-label input { width: auto; margin: 0; }
+    .param-actions { grid-column: 1 / -1; display: flex; gap: 10px; }
+    .param-actions button { width: auto; margin-top: 0; }
+    .runtime-panel {
+      margin-top: 16px;
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+    }
+    .runtime-panel h4 {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .runtime-symbol-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+    .runtime-symbol-tile {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fbfcfe;
+      font-size: 13px;
+    }
     @media (max-width: 760px) {
       main, header, .topbar { padding: 16px; }
       .signal-head, .signal-detail-grid { grid-template-columns: 1fr; }
       .advisory-grid { grid-template-columns: 1fr; }
       .filter-form { grid-template-columns: 1fr; }
       .filter-form button { width: 100%; }
+      .param-form { grid-template-columns: 1fr; }
+      .bot-card-head { flex-direction: column; align-items: stretch; }
     }
     """
 
@@ -1082,6 +1415,7 @@ def _render_nav(active: str) -> str:
         f"<a class=\"{'active' if active == 'algorithms' else ''}\" href=\"/algorithms\">Algorithms</a>"
         f"<a class=\"{'active' if active == 'backtests' else ''}\" href=\"/backtests\">Backtests</a>"
         f"<a class=\"{'active' if active == 'account' else ''}\" href=\"/account\">Account</a>"
+        f"<a class=\"{'active' if active == 'live-bots' else ''}\" href=\"/live-bots\">Live Bots</a>"
         "</div>"
         f"<div class=\"nav\">{logout_link}</div>"
         "</nav>"
@@ -2983,6 +3317,13 @@ def _parse_summary_hours(value: str) -> int:
     if parsed_value <= 0:
         return DEFAULT_SUMMARY_HOURS
     return parsed_value
+
+
+def _is_positive_decimal(value: str) -> bool:
+    try:
+        return Decimal(value) > 0
+    except (InvalidOperation, ValueError):
+        return False
 
 
 def _parse_chart_interval(value: str) -> str:

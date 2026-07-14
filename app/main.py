@@ -38,6 +38,7 @@ from app.historical_candles import (
     download_historical_candles,
     format_historical_download_results,
 )
+from app.live_paper_trader import run_live_paper_trading_loop, run_live_paper_trading_once
 from app.monitor import run_once, run_watch
 from app.signal_watcher import run_signal_watch_loop, run_signal_watch_once
 from app.summary import DEFAULT_SUMMARY_HOURS, build_market_summary, format_market_summary
@@ -114,6 +115,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_DASHBOARD_PORT,
         metavar="PORT",
         help="Dashboard port. Default: 8765.",
+    )
+    parser.add_argument(
+        "--paper-trade",
+        action="store_true",
+        help=(
+            "Run the live paper-trading loop for bots enabled on the LiveBotTrader dashboard tab. "
+            "Simulated orders against live market data only; never places a real Binance order."
+        ),
     )
     parser.add_argument(
         "--collect-candles",
@@ -267,6 +276,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.dashboard:
         run_dashboard_server(host=args.dashboard_host, port=args.dashboard_port)
+        return 0
+
+    if args.paper_trade:
+        if args.watch:
+            return run_live_paper_trading_loop()
+        run_live_paper_trading_once()
         return 0
 
     if args.db_maintenance:

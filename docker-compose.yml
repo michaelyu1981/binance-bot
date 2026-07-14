@@ -98,7 +98,10 @@ services:
       BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
     volumes:
       - ./logs:/app/logs:ro
-      - ./data:/app/data:ro
+      # Read-write: the Live Bot Trader tab writes data/live_bot_config.json
+      # (on/off + parameters) here. It never places real orders; see
+      # app/live_bot_state.py and docs/binance-api-key-policy.md.
+      - ./data:/app/data
     ports:
       - "127.0.0.1:8765:8765"
     command:
@@ -111,4 +114,20 @@ services:
         "0.0.0.0",
         "--dashboard-port",
         "8765",
+      ]
+
+  binance-paper-trader:
+    build:
+      context: .
+    image: binance-bot:local
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    command:
+      [
+        "python3",
+        "-m",
+        "app.main",
+        "--paper-trade",
+        "--watch",
       ]

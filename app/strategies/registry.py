@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Protocol
 
 from app.signals import MultiTimeframeSignalSummary, TechnicalSignalGuide
+from app.strategies.claude_modified_martingale_atr import ClaudeModifiedMartingaleATR
+from app.strategies.claude_modified_martingale_rsi import ClaudeModifiedMartingaleRSI
 from app.strategies.claude_triad_confluence import ClaudeTriadConfluence
 from app.strategies.claude_triad_confluence_v2 import ClaudeTriadConfluenceV2
 from app.strategies.claude_triad_confluence_v3 import ClaudeTriadConfluenceV3
@@ -34,6 +36,8 @@ STRATEGY_REGISTRY: tuple[Strategy, ...] = (
     ClaudeTriadConfluenceV3(),
     ClaudeTriadConfluenceV4(),
     ClaudeTriadConfluenceV5(),
+    ClaudeModifiedMartingaleRSI(),
+    ClaudeModifiedMartingaleATR(),
 )
 
 STRATEGIES = tuple(strategy.definition for strategy in STRATEGY_REGISTRY)

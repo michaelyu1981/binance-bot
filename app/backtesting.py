@@ -9,11 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import inspect
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 from app.config import PUBLIC_MARKET_WATCHLIST
 from app.strategies import STRATEGIES, StrategyDefinition, strategy_by_slug
+from app.strategies.claude_modified_martingale_atr import ClaudeModifiedMartingaleATR
+from app.strategies.claude_modified_martingale_rsi import ClaudeModifiedMartingaleRSI
 from app.strategies.claude_triad_confluence import ClaudeTriadConfluence
 from app.strategies.claude_triad_confluence_v2 import ClaudeTriadConfluenceV2
 from app.strategies.claude_triad_confluence_v3 import ClaudeTriadConfluenceV3
@@ -35,6 +39,8 @@ CLAUDE_STATEFUL_MACHINES = {
     "claude_triad_confluence_v3": ClaudeTriadConfluenceV3,
     "claude_triad_confluence_v4": ClaudeTriadConfluenceV4,
     "claude_triad_confluence_v5": ClaudeTriadConfluenceV5,
+    "claude_modified_martingale_rsi": ClaudeModifiedMartingaleRSI,
+    "claude_modified_martingale_atr": ClaudeModifiedMartingaleATR,
 }
 
 
@@ -84,8 +90,16 @@ def run_backtests(
     strategy_slug: str = "all",
     starting_usdt: Decimal = DEFAULT_BACKTEST_STARTING_USDT,
     db_path: Path = DEFAULT_BACKTEST_DB_PATH,
+    strategy_kwargs: dict[str, Any] | None = None,
 ) -> tuple[BacktestResult, ...]:
-    """Run deterministic local backtests for symbols and strategies."""
+    """Run deterministic local backtests for symbols and strategies.
+
+    `strategy_kwargs` lets a caller override a strategy's own tunable
+    parameters (e.g. `{"take_profit_percent": Decimal("2.0"), "rsi_entry_max":
+    Decimal("48")}` for `claude_modified_martingale_rsi`) without editing the
+    strategy's source. Silently ignored by strategies whose constructor
+    doesn't accept a given key.
+    """
 
     strategies = STRATEGIES if strategy_slug == "all" else (strategy_by_slug(strategy_slug),)
     results: list[BacktestResult] = []
@@ -105,6 +119,7 @@ def run_backtests(
                     interval=interval,
                     requested_days=days,
                     starting_usdt=starting_usdt,
+                    strategy_kwargs=strategy_kwargs,
                 )
             )
     return tuple(results)
@@ -164,6 +179,7 @@ def run_strategy_backtest(
     interval: str,
     requested_days: int,
     starting_usdt: Decimal,
+    strategy_kwargs: dict[str, Any] | None = None,
 ) -> BacktestResult:
     """Run one deterministic strategy simulation over candles."""
 
@@ -211,6 +227,7 @@ def run_strategy_backtest(
         requested_days=requested_days,
         available_days=available_days,
         starting_usdt=starting_usdt,
+        strategy_kwargs=strategy_kwargs,
     )
 
 
@@ -223,10 +240,17 @@ def _run_claude_stateful_backtest(
     requested_days: int,
     available_days: Decimal | None,
     starting_usdt: Decimal,
+    strategy_kwargs: dict[str, Any] | None = None,
 ) -> BacktestResult:
     """Feed raw candles to a self-contained Claude machine with O(1) tick state."""
 
-    machine = CLAUDE_STATEFUL_MACHINES[strategy.slug]()
+    machine_cls = CLAUDE_STATEFUL_MACHINES[strategy.slug]
+    constructor_params = inspect.signature(machine_cls.__init__).parameters
+    kwargs = dict(strategy_kwargs or {})
+    if "total_capital_usd" in constructor_params:
+        kwargs.setdefault("total_capital_usd", starting_usdt)
+    kwargs = {key: value for key, value in kwargs.items() if key in constructor_params}
+    machine = machine_cls(**kwargs)
     usdt_balance = starting_usdt
     base_balance = Decimal("0")
     trades: list[BacktestTrade] = []
