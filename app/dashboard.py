@@ -385,6 +385,10 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded_body)))
+            # This dashboard shows live/frequently-changing data (balances, bot
+            # status, prices) -- never let the browser serve a stale cached copy.
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
             self.end_headers()
             if include_body:
                 self.wfile.write(encoded_body)
@@ -991,7 +995,10 @@ def _render_live_bot_card(
           <span class="bot-status-badge {status_class}">{status_label}</span>
         </div>
         <div class="bot-card-actions">
-          <a href="/live-bots?show_wallet=1#wallet-panel" class="wallet-check-btn">Check My Wallet</a>
+          <form method="get" action="/live-bots" class="wallet-check-form">
+            <input type="hidden" name="show_wallet" value="1">
+            <button type="submit" class="wallet-check-btn">Check My Wallet</button>
+          </form>
           <div class="bot-toggle-wrap">
             <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
               <input type="hidden" name="slug" value="{escape(slug)}">
@@ -1567,16 +1574,21 @@ def _shared_page_css() -> str:
     .bot-toggle-btn.bot-status-on { background: #fff5f5; border-color: var(--bad); color: var(--bad); }
     .bot-toggle-btn.bot-status-off { background: var(--accent); border-color: var(--accent); color: white; }
     .bot-card-actions { display: flex; align-items: flex-start; gap: 12px; }
+    .wallet-check-form { margin: 0; }
     .wallet-check-btn {
       display: inline-block;
+      width: auto;
+      margin-top: 0;
       padding: 8px 14px;
       border: 1px solid var(--line);
       border-radius: 6px;
       background: var(--panel);
       color: var(--text);
-      text-decoration: none;
+      font: inherit;
       font-size: 13px;
+      font-weight: normal;
       white-space: nowrap;
+      cursor: pointer;
     }
     .wallet-check-btn:hover { border-color: var(--accent); color: var(--accent); }
     .bot-wallet-panel table { margin-top: 12px; }
