@@ -62,7 +62,10 @@ from app.summary import (
 from app.live_bot_state import (
     DEFAULT_CAPITAL_PER_SYMBOL,
     LIVE_BOT_DEFINITIONS,
+    TRADING_MODE_LIVE,
+    TRADING_MODE_SIMULATED,
     VALID_INTERVALS,
+    VALID_TRADING_MODES,
     read_live_bot_config,
     read_live_bot_runtime,
     write_live_bot_config,
@@ -210,6 +213,9 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/live-bots/toggle":
                 self._handle_live_bot_toggle()
                 return
+            if parsed_url.path == "/live-bots/mode":
+                self._handle_live_bot_mode()
+                return
             if parsed_url.path == "/live-bots/save":
                 self._handle_live_bot_save()
                 return
@@ -250,7 +256,12 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                     for slug, definition in LIVE_BOT_DEFINITIONS.items()
                 }
                 show_wallet = query.get("show_wallet", ["0"])[0] == "1"
-                body = render_live_bots_view(selected_symbols=selected_symbols, show_wallet=show_wallet)
+                live_blocked_slug = query.get("live_blocked", [""])[0]
+                body = render_live_bots_view(
+                    selected_symbols=selected_symbols,
+                    show_wallet=show_wallet,
+                    live_blocked_slug=live_blocked_slug,
+                )
             elif parsed_url.path == "/charts":
                 interval = _parse_chart_interval(query.get("interval", [DEFAULT_CHART_INTERVAL])[0])
                 body = render_chart_view(interval=interval)
@@ -307,11 +318,46 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
             form = parse_qs(body)
             slug = form.get("slug", [""])[0]
             action = form.get("action", [""])[0]
+            blocked = False
 
             if slug in LIVE_BOT_DEFINITIONS:
                 config = read_live_bot_config()
                 if slug in config:
-                    config[slug]["enabled"] = action == "on"
+                    wants_on = action == "on"
+                    if wants_on and config[slug].get("mode") == TRADING_MODE_LIVE:
+                        # Live mode has no real order-execution code behind it --
+                        # refuse to start rather than silently paper-trade under
+                        # a "LIVE" label. Switch back to Simulated to run.
+                        blocked = True
+                    else:
+                        config[slug]["enabled"] = wants_on
+                        config[slug]["updated_at"] = current_timestamp()
+                        write_live_bot_config(config)
+
+            location = "/live-bots" + (f"?live_blocked={slug}" if blocked else "")
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def _handle_live_bot_mode(self) -> None:
+            if _is_auth_required() and not _is_authenticated(self.headers.get("Cookie", "")):
+                self._redirect("/login")
+                return
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(content_length).decode("utf-8")
+            form = parse_qs(body)
+            slug = form.get("slug", [""])[0]
+            mode = form.get("mode", [""])[0]
+
+            if slug in LIVE_BOT_DEFINITIONS and mode in VALID_TRADING_MODES:
+                config = read_live_bot_config()
+                if slug in config:
+                    # Switching mode always stops the bot -- forces a fresh,
+                    # explicit Start Trading press under whichever mode is now
+                    # selected, rather than a mode change silently altering an
+                    # already-running bot.
+                    config[slug]["mode"] = mode
+                    config[slug]["enabled"] = False
                     config[slug]["updated_at"] = current_timestamp()
                     write_live_bot_config(config)
 
@@ -783,6 +829,7 @@ def render_live_bots_view(
     *,
     selected_symbols: dict[str, str] | None = None,
     show_wallet: bool = False,
+    live_blocked_slug: str = "",
 ) -> str:
     """Render the Live Bot Trader tab: on/off + tunable settings for the 3 approved paper-trading bots."""
 
@@ -798,6 +845,7 @@ def render_live_bots_view(
             bot_runtime=runtime.get(slug, {}),
             selected_symbol=selected_symbols.get(slug, ""),
             runtime_updated_at=runtime_updated_at,
+            show_live_blocked_notice=slug == live_blocked_slug,
         )
         for slug, definition in LIVE_BOT_DEFINITIONS.items()
     )
@@ -1058,6 +1106,7 @@ def _render_live_bot_card(
     bot_runtime: dict[str, Any],
     selected_symbol: str,
     runtime_updated_at: str | None,
+    show_live_blocked_notice: bool = False,
 ) -> str:
     enabled = bool(bot_config.get("enabled", False))
     interval = str(bot_config.get("interval", definition["recommended_interval"]))
@@ -1066,11 +1115,45 @@ def _render_live_bot_card(
     capital_by_symbol = bot_config.get("capital_by_symbol") or {}
     symbols = bot_config.get("symbols") or list(PUBLIC_MARKET_WATCHLIST)
     params = bot_config.get("params", {})
+    mode = bot_config.get("mode", TRADING_MODE_SIMULATED)
+    is_live_mode = mode == TRADING_MODE_LIVE
 
     status_class = "bot-status-on" if enabled else "bot-status-off"
     status_label = "ON" if enabled else "OFF"
     toggle_label = "Stop Trading" if enabled else "Start Trading"
     toggle_action = "off" if enabled else "on"
+
+    mode_switch_html = f"""
+        <div class="bot-mode-switch">
+          <form method="post" action="/live-bots/mode" class="bot-mode-form">
+            <input type="hidden" name="slug" value="{escape(slug)}">
+            <input type="hidden" name="mode" value="{TRADING_MODE_SIMULATED}">
+            <button type="submit" class="bot-mode-btn {"bot-mode-active" if not is_live_mode else ""}"
+              {"disabled" if not is_live_mode else ""}>Simulated Trading</button>
+          </form>
+          <form method="post" action="/live-bots/mode" class="bot-mode-form">
+            <input type="hidden" name="slug" value="{escape(slug)}">
+            <input type="hidden" name="mode" value="{TRADING_MODE_LIVE}">
+            <button type="submit" class="bot-mode-btn bot-mode-live {"bot-mode-active" if is_live_mode else ""}"
+              {"disabled" if is_live_mode else ""}>Live Trading</button>
+          </form>
+        </div>
+    """
+    if is_live_mode:
+        mode_note_html = (
+            '<div class="bot-note bot-note-warn">&#9888; Live Trading is selected, but no real order-execution '
+            "code exists in this project yet -- <strong>Start Trading is disabled</strong> while this bot is set "
+            "to Live. Switch back to Simulated Trading to run the paper-trading loop.</div>"
+        )
+    else:
+        mode_note_html = ""
+    blocked_notice_html = (
+        '<div class="bot-note bot-note-warn">&#9888; Start Trading was refused: this bot is set to '
+        "<strong>Live Trading</strong>, which has no real order-execution code behind it yet. "
+        "Switch to Simulated Trading first.</div>"
+        if show_live_blocked_notice
+        else ""
+    )
 
     bot_updated_at = bot_config.get("updated_at")
     is_synced = bot_updated_at is None or (runtime_updated_at is not None and runtime_updated_at >= bot_updated_at)
@@ -1134,6 +1217,7 @@ def _render_live_bot_card(
             <button type="submit" class="wallet-check-btn">Check My Wallet</button>
           </form>
           <div class="bot-toggle-wrap">
+            {mode_switch_html}
             <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
               <input type="hidden" name="slug" value="{escape(slug)}">
               <input type="hidden" name="action" value="{toggle_action}">
@@ -1144,6 +1228,8 @@ def _render_live_bot_card(
         </div>
       </div>
       <p class="muted">{escape(definition['summary'])}</p>
+      {mode_note_html}
+      {blocked_notice_html}
       {timeframe_note}
       <form method="post" action="/live-bots/save" class="param-form bot-settings-form">
         <input type="hidden" name="slug" value="{escape(slug)}">
@@ -1707,6 +1793,28 @@ def _shared_page_css() -> str:
     }
     .bot-toggle-btn.bot-status-on { background: #fff5f5; border-color: var(--bad); color: var(--bad); }
     .bot-toggle-btn.bot-status-off { background: var(--accent); border-color: var(--accent); color: white; }
+    .bot-mode-switch {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .bot-mode-form { margin: 0; }
+    .bot-mode-btn {
+      margin-top: 0;
+      width: auto;
+      border: none;
+      border-radius: 0;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      background: var(--panel);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .bot-mode-btn:disabled { cursor: default; }
+    .bot-mode-btn.bot-mode-active { background: rgba(100, 112, 132, 0.16); color: var(--text); }
+    .bot-mode-btn.bot-mode-live.bot-mode-active { background: rgba(240, 62, 62, 0.14); color: var(--bad); }
     .bot-card-actions { display: flex; align-items: flex-start; gap: 12px; }
     .wallet-check-form { margin: 0; }
     .wallet-check-btn {

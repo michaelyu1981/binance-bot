@@ -90,6 +90,16 @@ LIVE_BOT_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 VALID_INTERVALS = ("15m", "1h", "4h", "1d", "1w")
 
+# Per-bot trading mode. This is a UI selector only -- "live" never places a
+# real order (no order-execution code exists anywhere in this project). When
+# a bot's mode is "live", Start Trading is refused by the dashboard rather
+# than silently running paper trades under a "LIVE" label. Only Michael's
+# exact phrase "enable live spot trading." per docs/binance-api-key-policy.md
+# would change that.
+TRADING_MODE_SIMULATED = "simulated"
+TRADING_MODE_LIVE = "live"
+VALID_TRADING_MODES = (TRADING_MODE_SIMULATED, TRADING_MODE_LIVE)
+
 
 def default_config() -> dict[str, Any]:
     """The config every bot starts from: off, tested defaults, full watchlist."""
@@ -97,6 +107,7 @@ def default_config() -> dict[str, Any]:
     return {
         slug: {
             "enabled": False,
+            "mode": TRADING_MODE_SIMULATED,
             "interval": definition["recommended_interval"],
             "capital_by_symbol": {symbol: str(DEFAULT_CAPITAL_PER_SYMBOL) for symbol in PUBLIC_MARKET_WATCHLIST},
             "symbols": list(PUBLIC_MARKET_WATCHLIST),
