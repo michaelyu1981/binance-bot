@@ -1169,9 +1169,9 @@ def _render_live_bot_card(
             runtime_updated_at is not None and runtime_updated_at >= bot_updated_at
         )
         if is_synced:
-            sync_html = '<span class="bot-sync-status bot-sync-ready">Ready to deploy</span>'
+            sync_html = '<span class="bot-sync-status bot-sync-ready">Settings Live</span>'
         else:
-            sync_html = '<span class="bot-sync-status bot-sync-pending">Not ready — waiting for next cycle&hellip;</span>'
+            sync_html = '<span class="bot-sync-status bot-sync-pending">Syncing&hellip;</span>'
 
     if interval == recommended_interval:
         timeframe_note = (
