@@ -1498,7 +1498,7 @@ def _shared_page_css() -> str:
     .bot-toggle-btn.bot-status-off { background: var(--accent); border-color: var(--accent); color: white; }
     .bot-toggle-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
     .bot-sync-status {
-      font-size: 12px;
+      font-size: 15pt;
       font-weight: 800;
       white-space: nowrap;
       text-shadow:
@@ -1651,6 +1651,8 @@ def _shared_page_css() -> str:
       .filter-form button { width: 100%; }
       .param-form { grid-template-columns: 1fr; }
       .bot-card-head { flex-direction: column; align-items: stretch; }
+      .bot-toggle-wrap { align-items: flex-start; }
+      .bot-sync-status { white-space: normal; }
       .distribute-row { grid-template-columns: 1fr; }
       .distribute-row .btn-secondary { grid-column: 1; width: 100%; }
     }
