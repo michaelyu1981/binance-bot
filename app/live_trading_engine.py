@@ -177,6 +177,7 @@ class TradingEngine:
         if key not in self._sessions:
             builder = _STRATEGY_BUILDERS[slug]
             session: dict[str, Any] = {
+                "slug": slug,
                 "machine": builder(capital, params),
                 "usdt_balance": capital,
                 "base_balance": Decimal("0"),
