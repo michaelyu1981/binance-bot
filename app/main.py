@@ -39,6 +39,7 @@ from app.historical_candles import (
     format_historical_download_results,
 )
 from app.live_paper_trader import run_live_paper_trading_loop, run_live_paper_trading_once
+from app.live_real_trader import run_live_real_trading_loop, run_live_real_trading_once
 from app.monitor import run_once, run_watch
 from app.signal_watcher import run_signal_watch_loop, run_signal_watch_once
 from app.summary import DEFAULT_SUMMARY_HOURS, build_market_summary, format_market_summary
@@ -120,8 +121,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--paper-trade",
         action="store_true",
         help=(
-            "Run the live paper-trading loop for bots enabled on the LiveBotTrader dashboard tab. "
-            "Simulated orders against live market data only; never places a real Binance order."
+            "Run the live paper-trading loop for bots enabled on the LiveBotTrader dashboard tab "
+            "with mode=='simulated'. Simulated orders against live market data only; never places "
+            "a real Binance order."
+        ),
+    )
+    parser.add_argument(
+        "--live-trade",
+        action="store_true",
+        help=(
+            "Run the LIVE REAL-MONEY trading loop for bots enabled on the LiveBotTrader dashboard "
+            "tab with mode=='live'. Places real Binance market orders using BINANCE_LIVE_API_KEY/"
+            "BINANCE_LIVE_API_SECRET. See docs/binance-api-key-policy.md."
         ),
     )
     parser.add_argument(
@@ -282,6 +293,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.watch:
             return run_live_paper_trading_loop()
         run_live_paper_trading_once()
+        return 0
+
+    if args.live_trade:
+        if args.watch:
+            return run_live_real_trading_loop()
+        run_live_real_trading_once()
         return 0
 
     if args.db_maintenance:

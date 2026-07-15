@@ -68,6 +68,7 @@ from app.live_bot_state import (
     VALID_TRADING_MODES,
     read_live_bot_config,
     read_live_bot_runtime,
+    read_live_trade_runtime,
     write_live_bot_config,
 )
 from app.logger import current_timestamp, format_coin_amount, format_currency_usd
@@ -256,12 +257,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                     for slug, definition in LIVE_BOT_DEFINITIONS.items()
                 }
                 show_wallet = query.get("show_wallet", ["0"])[0] == "1"
-                live_blocked_slug = query.get("live_blocked", [""])[0]
-                body = render_live_bots_view(
-                    selected_symbols=selected_symbols,
-                    show_wallet=show_wallet,
-                    live_blocked_slug=live_blocked_slug,
-                )
+                body = render_live_bots_view(selected_symbols=selected_symbols, show_wallet=show_wallet)
             elif parsed_url.path == "/charts":
                 interval = _parse_chart_interval(query.get("interval", [DEFAULT_CHART_INTERVAL])[0])
                 body = render_chart_view(interval=interval)
@@ -318,25 +314,20 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
             form = parse_qs(body)
             slug = form.get("slug", [""])[0]
             action = form.get("action", [""])[0]
-            blocked = False
 
             if slug in LIVE_BOT_DEFINITIONS:
                 config = read_live_bot_config()
                 if slug in config:
-                    wants_on = action == "on"
-                    if wants_on and config[slug].get("mode") == TRADING_MODE_LIVE:
-                        # Live mode has no real order-execution code behind it --
-                        # refuse to start rather than silently paper-trade under
-                        # a "LIVE" label. Switch back to Simulated to run.
-                        blocked = True
-                    else:
-                        config[slug]["enabled"] = wants_on
-                        config[slug]["updated_at"] = current_timestamp()
-                        write_live_bot_config(config)
+                    # Starting a bot whose mode is "live" places real orders
+                    # via app/live_real_trader.py -- see docs/binance-api-key-policy.md.
+                    # The dashboard's job is only to persist the flag; the
+                    # separate live-trading loop process checks it every cycle.
+                    config[slug]["enabled"] = action == "on"
+                    config[slug]["updated_at"] = current_timestamp()
+                    write_live_bot_config(config)
 
-            location = "/live-bots" + (f"?live_blocked={slug}" if blocked else "")
             self.send_response(303)
-            self.send_header("Location", location)
+            self.send_header("Location", "/live-bots")
             self.end_headers()
 
         def _handle_live_bot_mode(self) -> None:
@@ -829,23 +820,28 @@ def render_live_bots_view(
     *,
     selected_symbols: dict[str, str] | None = None,
     show_wallet: bool = False,
-    live_blocked_slug: str = "",
 ) -> str:
-    """Render the Live Bot Trader tab: on/off + tunable settings for the 3 approved paper-trading bots."""
+    """Render the Live Bot Trader tab: on/off + tunable settings for the 3 approved bots."""
 
     selected_symbols = selected_symbols or {}
     config = read_live_bot_config()
-    runtime = read_live_bot_runtime()
-    runtime_updated_at = runtime.get("updated_at")
+    paper_runtime = read_live_bot_runtime()
+    trade_runtime = read_live_trade_runtime()
+
+    def _runtime_for(slug: str) -> tuple[dict[str, Any], str | None]:
+        bot_config = config.get(slug, {})
+        if bot_config.get("mode") == TRADING_MODE_LIVE:
+            return trade_runtime.get(slug, {}), trade_runtime.get("updated_at")
+        return paper_runtime.get(slug, {}), paper_runtime.get("updated_at")
+
     cards = "".join(
         _render_live_bot_card(
             slug=slug,
             definition=definition,
             bot_config=config.get(slug, {}),
-            bot_runtime=runtime.get(slug, {}),
+            bot_runtime=_runtime_for(slug)[0],
             selected_symbol=selected_symbols.get(slug, ""),
-            runtime_updated_at=runtime_updated_at,
-            show_live_blocked_notice=slug == live_blocked_slug,
+            runtime_updated_at=_runtime_for(slug)[1],
         )
         for slug, definition in LIVE_BOT_DEFINITIONS.items()
     )
@@ -1095,6 +1091,20 @@ def _live_bots_warning_script() -> str:
         }
       });
     });
+    document.querySelectorAll('form.bot-toggle-form').forEach(function (form) {
+      form.addEventListener('submit', function (event) {
+        var action = form.querySelector('input[name="action"]');
+        if (form.getAttribute('data-mode') === 'live' && action && action.value === 'on') {
+          var confirmed = window.confirm(
+            'This bot is set to LIVE TRADING. Pressing Start Trading places REAL market buy/sell ' +
+            'orders using real Binance funds. This is not a simulation. Continue?'
+          );
+          if (!confirmed) {
+            event.preventDefault();
+          }
+        }
+      });
+    });
     """
 
 
@@ -1106,7 +1116,6 @@ def _render_live_bot_card(
     bot_runtime: dict[str, Any],
     selected_symbol: str,
     runtime_updated_at: str | None,
-    show_live_blocked_notice: bool = False,
 ) -> str:
     enabled = bool(bot_config.get("enabled", False))
     interval = str(bot_config.get("interval", definition["recommended_interval"]))
@@ -1141,19 +1150,12 @@ def _render_live_bot_card(
     """
     if is_live_mode:
         mode_note_html = (
-            '<div class="bot-note bot-note-warn">&#9888; Live Trading is selected, but no real order-execution '
-            "code exists in this project yet -- <strong>Start Trading is disabled</strong> while this bot is set "
-            "to Live. Switch back to Simulated Trading to run the paper-trading loop.</div>"
+            '<div class="bot-note bot-note-live">&#128308; <strong>LIVE TRADING is selected.</strong> '
+            "Pressing Start Trading places REAL market buy/sell orders using real Binance funds for this bot. "
+            "Press Stop Trading at any time to halt it immediately -- that is the kill switch.</div>"
         )
     else:
         mode_note_html = ""
-    blocked_notice_html = (
-        '<div class="bot-note bot-note-warn">&#9888; Start Trading was refused: this bot is set to '
-        "<strong>Live Trading</strong>, which has no real order-execution code behind it yet. "
-        "Switch to Simulated Trading first.</div>"
-        if show_live_blocked_notice
-        else ""
-    )
 
     if not enabled:
         # The sync badge answers "has the background loop picked up my
@@ -1208,6 +1210,7 @@ def _render_live_bot_card(
             symbols=symbols,
             bot_runtime=bot_runtime,
             selected_symbol=selected_symbol,
+            mode=mode,
         )
         if enabled
         else ""
@@ -1227,7 +1230,7 @@ def _render_live_bot_card(
           </form>
           <div class="bot-toggle-wrap">
             {mode_switch_html}
-            <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
+            <form method="post" action="/live-bots/toggle" class="bot-toggle-form" data-mode="{escape(mode)}">
               <input type="hidden" name="slug" value="{escape(slug)}">
               <input type="hidden" name="action" value="{toggle_action}">
               <button type="submit" class="bot-toggle-btn {status_class}">{toggle_label}</button>
@@ -1238,7 +1241,6 @@ def _render_live_bot_card(
       </div>
       <p class="muted">{escape(definition['summary'])}</p>
       {mode_note_html}
-      {blocked_notice_html}
       {timeframe_note}
       <form method="post" action="/live-bots/save" class="param-form bot-settings-form">
         <input type="hidden" name="slug" value="{escape(slug)}">
@@ -1292,11 +1294,18 @@ def _render_live_bot_activity(
     symbols: list[str],
     bot_runtime: dict[str, Any],
     selected_symbol: str,
+    mode: str = TRADING_MODE_SIMULATED,
 ) -> str:
+    is_live = mode == TRADING_MODE_LIVE
+    panel_class = "runtime-panel runtime-panel-live" if is_live else "runtime-panel"
+    panel_title = "LIVE Trading Status (real funds)" if is_live else "Live Paper Status"
+    loop_label = "the live trading loop's" if is_live else "the paper-trading loop's"
+    empty_trade_message = "No real trades yet for this coin." if is_live else "No simulated trades yet for this coin."
+
     if not bot_runtime:
         return (
-            '<div class="runtime-panel muted">No live status yet -- '
-            "waiting for the paper-trading loop's next cycle (checks every couple of minutes).</div>"
+            f'<div class="{panel_class} muted">No live status yet -- '
+            f"waiting for {loop_label} next cycle (checks every couple of minutes).</div>"
         )
 
     tiles: list[str] = []
@@ -1320,7 +1329,7 @@ def _render_live_bot_activity(
             "</div>"
         )
     if not tiles:
-        return '<div class="runtime-panel muted">No live status yet.</div>'
+        return f'<div class="{panel_class} muted">No live status yet.</div>'
 
     query_param = definition["query_param"]
     selectable_symbols = [symbol for symbol in symbols if symbol in bot_runtime]
@@ -1342,7 +1351,9 @@ def _render_live_bot_activity(
         reference_lines = symbol_info.get("reference_lines") or []
         candles = _load_bot_chart_candles(symbol=selected_symbol, interval=interval)
         chart_svg = _render_live_bot_chart_svg(candles, reference_lines)
-        trade_table = _render_trade_history_table(symbol_info.get("recent_trades") or [])
+        trade_table = _render_trade_history_table(
+            symbol_info.get("recent_trades") or [], empty_message=empty_trade_message
+        )
         coin_tabs_html = f'<div class="nav" style="margin-bottom:10px;">{coin_tabs}</div>' if coin_tabs else ""
         chart_section = (
             '<div class="bot-chart-section">'
@@ -1355,27 +1366,39 @@ def _render_live_bot_activity(
         )
 
     return (
-        '<div class="runtime-panel"><h4>Live Paper Status</h4>'
+        f'<div class="{panel_class}"><h4>{escape(panel_title)}</h4>'
         f'<div class="runtime-symbol-grid">{"".join(tiles)}</div>'
         f"{chart_section}"
         "</div>"
     )
 
 
-def _render_trade_history_table(trades: list[dict[str, Any]]) -> str:
+def _render_trade_history_table(
+    trades: list[dict[str, Any]], *, empty_message: str = "No simulated trades yet for this coin."
+) -> str:
     if not trades:
-        return '<p class="muted">No simulated trades yet for this coin.</p>'
+        return f'<p class="muted">{escape(empty_message)}</p>'
 
-    rows = "".join(
-        "<tr>"
-        f"<td>{escape(_format_axis_time(int(trade.get('timestamp_ms', 0))))}</td>"
-        f'<td class="{"positive" if trade.get("action") == "SIMULATED_BUY" else "negative"}">'
-        f'{escape(str(trade.get("action", "")).replace("SIMULATED_", ""))}</td>'
-        f"<td>{escape(_format_axis_price(Decimal(str(trade.get('price', '0')))))}</td>"
-        f"<td>{escape(str(trade.get('reason', '')))}</td>"
-        "</tr>"
-        for trade in reversed(trades)
-    )
+    def _row(trade: dict[str, Any]) -> str:
+        action_raw = str(trade.get("action", ""))
+        is_failed = "FAILED" in action_raw
+        is_buy = "BUY" in action_raw
+        label = action_raw.replace("SIMULATED_", "").replace("LIVE_", "").replace("_", " ")
+        row_class = "negative" if (is_failed or not is_buy) else "positive"
+        price_raw = trade.get("price")
+        price_display = (
+            escape(_format_axis_price(Decimal(str(price_raw)))) if price_raw is not None else "n/a"
+        )
+        return (
+            "<tr>"
+            f"<td>{escape(_format_axis_time(int(trade.get('timestamp_ms', 0))))}</td>"
+            f'<td class="{row_class}">{escape(label)}</td>'
+            f"<td>{price_display}</td>"
+            f"<td>{escape(str(trade.get('reason', '')))}</td>"
+            "</tr>"
+        )
+
+    rows = "".join(_row(trade) for trade in reversed(trades))
     return (
         '<div class="trade-history-scroll">'
         '<table class="summary-table"><thead><tr>'
@@ -1908,6 +1931,20 @@ def _shared_page_css() -> str:
       color: var(--muted);
       text-transform: uppercase;
       letter-spacing: 0.04em;
+    }
+    .runtime-panel-live {
+      border-top: 2px solid var(--bad);
+      background: rgba(240, 62, 62, 0.05);
+      border-radius: 8px;
+      padding: 14px;
+      margin-top: 16px;
+    }
+    .runtime-panel-live h4 { color: var(--bad); }
+    .bot-note-live {
+      border-color: rgba(240, 62, 62, 0.4);
+      background: rgba(240, 62, 62, 0.08);
+      color: var(--bad);
+      font-weight: 600;
     }
     .runtime-symbol-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
     .runtime-symbol-tile {

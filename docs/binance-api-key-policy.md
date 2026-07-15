@@ -35,6 +35,15 @@ Withdrawal permission is forbidden forever.
 The project must never enable withdrawals from code, config, docs, examples,
 tests, scripts, or deployment instructions.
 
+Transfer permission is forbidden forever.
+
+The project must never move funds between wallets (Spot, Funding, Earn, or
+any other Binance wallet) via the API -- no internal transfer endpoints, no
+sub-account transfers, no universal transfer calls. Moving funds between
+wallets must only ever be done manually inside the Binance platform itself.
+Any future live key must have Internal Transfer permission disabled, the
+same as Withdrawal.
+
 ## Forbidden By Default
 
 The following are forbidden by default:
@@ -74,6 +83,8 @@ Requirements:
 - Minimum-permission.
 - Tiny-size only.
 - No withdrawal permission.
+- No internal transfer permission (no moving funds between wallets via API --
+  manual only, in the Binance platform).
 - No futures permission.
 - No margin permission.
 - No leverage.
@@ -171,22 +182,41 @@ Before any live Spot work:
 
 - Michael must say `enable live spot trading.`
 - Review order-related code paths.
-- Review max position size, max daily loss, stop-loss, and emergency stop.
+- Review max total capital deployable live (hard cap per bot).
+- Confirm the kill switch: pressing Stop Trading immediately halts all live
+  buying/selling for that bot. Spot-only DCA strategies intentionally do not
+  use an automatic stop-loss/circuit breaker -- a falling price is treated as
+  a buy signal, not a loss to cut. The kill switch is manual, not automatic.
+- Confirm every live buy and sell is logged (time, symbol, side, price,
+  quantity, triggering parameter) and visible in the dashboard, separate
+  from paper trades, so trading can be monitored.
 - Confirm Spot-only and IP whitelist.
-- Confirm withdrawal, futures, margin, leverage, and borrow features are
-  disabled.
+- Confirm withdrawal, internal transfer, futures, margin, leverage, and
+  borrow features are disabled.
 
 ## Current Project Status
 
-Current status: public-data plus read-only account access.
+Current status: public-data, read-only account access, and live Spot market
+order placement (real orders, real funds), enabled 2026-07-15 after
+Michael's exact phrase "enable live spot trading."
 
 A read-only Binance account API key is present on Hermes, used only by
 `app/binance_account.py`, `app/dashboard.py`, and the `--account-summary` CLI
 flag in `app/main.py` for read-only portfolio/balance viewing.
 
-No live trading is enabled (`ENABLE_LIVE_TRADING=false`, `DRY_RUN=true`,
-`BOT_MODE=read_only` on Hermes).
+A separate live-trading Binance account API key (`coinpilot-live-spot`,
+Spot-only, no Withdrawals, no Internal Transfer, IP-restricted to Hermes) is
+present on Hermes as `BINANCE_LIVE_API_KEY`/`BINANCE_LIVE_API_SECRET`, used
+only by `app/binance_trader.py` (market buy/sell + LOT_SIZE lookup, no other
+endpoints) via `app/live_real_trader.py`.
 
-No buy/sell or order endpoints exist anywhere in the codebase (verified by
-searching the deployed `app/` directory on Hermes for
-`create_order`/`place_order`/order-endpoint calls -- none found).
+`app/live_real_trader.py` only places a real order for a bot when its
+LiveBotTrader dashboard config has `mode == "live"` AND `enabled == True`.
+The kill switch is the dashboard's Stop Trading button: each cycle re-reads
+the config, and a disabled bot is skipped immediately. Real trading does not
+use an automatic stop-loss/circuit breaker by design -- the approved
+strategies are spot-only DCA/ladder strategies where a falling price is
+treated as a buy signal, not a loss to cut; every real buy/sell is instead
+logged (time, symbol, side, price, quantity, order ID, triggering parameter)
+to `data/live_trade_runtime.json` and shown in a dashboard table visually
+distinct from paper trades, for manual monitoring.

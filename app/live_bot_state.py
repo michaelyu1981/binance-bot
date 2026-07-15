@@ -1,23 +1,32 @@
-"""Shared on-disk state for the Live Bot Trader dashboard tab and its paper-trading loop.
+"""Shared on-disk state for the Live Bot Trader dashboard tab and its trading loops.
 
-Two JSON files live under `data/`:
+Three JSON files live under `data/`:
 
 - `LIVE_BOT_CONFIG_PATH`: written by the dashboard when the user toggles a
-  bot on/off or saves parameters; read by the paper-trading loop every
-  cycle to decide what to run and with which settings.
-- `LIVE_BOT_RUNTIME_PATH`: written by the paper-trading loop after every
-  processed candle; read by the dashboard to display each bot's current
-  simulated position, balance, and recent decisions.
+  bot on/off, changes its Simulated/Live mode, or saves parameters; read by
+  both trading loops every cycle to decide what to run and with which
+  settings.
+- `LIVE_BOT_RUNTIME_PATH`: written by `app/live_paper_trader.py` after every
+  processed candle for bots with mode == "simulated"; read by the dashboard
+  to display each bot's current paper position, balance, and recent
+  decisions.
+- `LIVE_TRADE_RUNTIME_PATH`: written by `app/live_real_trader.py` after every
+  processed candle for bots with mode == "live"; read by the dashboard to
+  display each bot's current real position, balance, and recent real
+  fills -- kept separate from the paper runtime file so real trades are
+  never mixed into the same table as paper trades.
 
 This module only exposes 3 pre-approved strategies (see [[validated
 strategies]] memory / `docs/binance-api-key-policy.md`): the two Martingale
 ladders (RSI, ATR) and Triad Confluence V5. Every other registered strategy
 is intentionally left out of this tab.
 
-PAPER TRADING ONLY. Nothing in this module calls a Binance order endpoint,
-reads a signed/account credential, or places a real trade. Enabling real
-order execution requires Michael's exact phrase "enable live spot trading."
-per `docs/binance-api-key-policy.md` and is not implemented here.
+Nothing in this module itself calls a Binance order endpoint or reads a
+signed/account credential -- it's on-disk config/runtime plumbing only. Real
+order placement lives in `app/binance_trader.py` and `app/live_real_trader.py`,
+reachable only for a bot with mode == "live" AND enabled == True, which in
+turn was only reachable after Michael's exact phrase
+"enable live spot trading." per `docs/binance-api-key-policy.md`.
 """
 
 from __future__ import annotations
@@ -34,6 +43,11 @@ from app.logger import current_timestamp
 
 LIVE_BOT_CONFIG_PATH = Path("data/live_bot_config.json")
 LIVE_BOT_RUNTIME_PATH = Path("data/live_bot_runtime.json")
+# Separate from LIVE_BOT_RUNTIME_PATH so the paper-trading loop and the
+# real-money loop, which run as two independent processes, never overwrite
+# each other's runtime file -- and so the dashboard can show live fills in a
+# visually distinct table from paper fills.
+LIVE_TRADE_RUNTIME_PATH = Path("data/live_trade_runtime.json")
 
 DEFAULT_CAPITAL_PER_SYMBOL = Decimal("1000")
 
@@ -154,6 +168,15 @@ def read_live_bot_runtime() -> dict[str, Any]:
 def write_live_bot_runtime(runtime: dict[str, Any]) -> None:
     payload = {"updated_at": current_timestamp(), **runtime}
     _write_json_atomic(LIVE_BOT_RUNTIME_PATH, payload)
+
+
+def read_live_trade_runtime() -> dict[str, Any]:
+    return _read_json(LIVE_TRADE_RUNTIME_PATH)
+
+
+def write_live_trade_runtime(runtime: dict[str, Any]) -> None:
+    payload = {"updated_at": current_timestamp(), **runtime}
+    _write_json_atomic(LIVE_TRADE_RUNTIME_PATH, payload)
 
 
 def _read_json(path: Path) -> dict[str, Any]:

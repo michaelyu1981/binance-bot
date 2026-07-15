@@ -131,3 +131,22 @@ services:
         "--paper-trade",
         "--watch",
       ]
+
+  binance-live-trader:
+    build:
+      context: .
+    image: binance-bot:local
+    restart: unless-stopped
+    environment:
+      BINANCE_LIVE_API_KEY: ${BINANCE_LIVE_API_KEY:-}
+      BINANCE_LIVE_API_SECRET: ${BINANCE_LIVE_API_SECRET:-}
+    volumes:
+      - ./data:/app/data
+    command:
+      [
+        "python3",
+        "-m",
+        "app.main",
+        "--live-trade",
+        "--watch",
+      ]
