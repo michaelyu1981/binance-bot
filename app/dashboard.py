@@ -31,6 +31,9 @@ from app.binance_account import (
     AccountSnapshot,
     BinanceAccountError,
     fetch_account_snapshot,
+    fetch_funding_wallet_balances,
+    fetch_simple_earn_flexible_positions,
+    fetch_simple_earn_locked_positions,
     load_binance_account_config_from_env,
 )
 from app.binance_reader import BinancePublicMarketError, fetch_public_prices
@@ -798,7 +801,10 @@ def render_live_bots_view(
         )
         for slug, definition in LIVE_BOT_DEFINITIONS.items()
     )
-    wallet_panel = _render_live_bots_wallet_panel() if show_wallet else '<div id="wallet-panel"></div>'
+    if show_wallet:
+        wallet_panel = _render_live_bots_wallet_overview_panel() + _render_live_bots_wallet_panel()
+    else:
+        wallet_panel = '<div id="wallet-panel"></div>'
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -845,7 +851,7 @@ def _render_live_bots_wallet_panel() -> str:
     if config is None:
         return (
             '<section id="wallet-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">'
-            "<h2>Your Binance Wallet</h2>"
+            "<h2>Spot Wallet</h2>"
             '<p class="muted">BINANCE_API_KEY and BINANCE_API_SECRET are not configured.</p>'
             "</section>"
         )
@@ -855,7 +861,7 @@ def _render_live_bots_wallet_panel() -> str:
     except BinanceAccountError as exc:
         return (
             '<section id="wallet-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">'
-            "<h2>Your Binance Wallet</h2>"
+            "<h2>Spot Wallet</h2>"
             f'<p class="negative">Could not fetch wallet snapshot: {escape(str(exc))}</p>'
             "</section>"
         )
@@ -878,16 +884,142 @@ def _render_live_bots_wallet_panel() -> str:
 
     return f"""
     <section id="wallet-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">
-      <h2>Your Binance Wallet (live, read-only)</h2>
+      <h2>Spot Wallet</h2>
       <p class="muted">
-        Fetched just now from your actual Binance Spot account -- use this to decide how to split
-        capital across the coins above. Read-only account endpoint only. No orders. No withdrawals.
+        This is your Spot trading wallet specifically -- what's directly tradable right now.
+        It does not include Funding or Earn balances; see Overview above for your full picture.
+        Fetched live just now. Read-only account endpoint only. No orders. No withdrawals.
       </p>
       {_metric_card('Free USDT (Spot)', format_currency_usd(usdt_free))}
       <table class="summary-table">
         <thead><tr><th>Asset</th><th>Free (Tradable)</th><th>Note</th></tr></thead>
         <tbody>{rows}</tbody>
       </table>
+    </section>
+    """
+
+
+def _render_live_bots_wallet_overview_panel() -> str:
+    """Aggregated read-only snapshot across every wallet: Spot + Funding + Simple Earn.
+
+    Matches Binance's own app "Overview" screen, which is why a coin like BNB
+    parked entirely in Earn shows up here even though it's absent from the
+    Spot-only panel below. LD-prefixed Spot balances (e.g. LDBNB, LDUSDT) are
+    excluded from this aggregation on purpose: they represent the exact same
+    Simple Earn Flexible position the dedicated Earn endpoint already
+    reports (confirmed via Binance's own API docs/community), so counting
+    both would double the real holding.
+    """
+
+    config = load_binance_account_config_from_env()
+    if config is None:
+        return (
+            '<section id="wallet-overview-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">'
+            "<h2>Overview (All Wallets Combined)</h2>"
+            '<p class="muted">BINANCE_API_KEY and BINANCE_API_SECRET are not configured.</p>'
+            "</section>"
+        )
+
+    holdings: dict[str, dict[str, Decimal]] = {}
+    fetch_errors: list[str] = []
+
+    def add_holdings(location: str, balances: tuple[AccountBalance, ...]) -> None:
+        for balance in balances:
+            if balance.total <= 0:
+                continue
+            per_location = holdings.setdefault(balance.asset, {})
+            per_location[location] = per_location.get(location, Decimal("0")) + balance.total
+
+    try:
+        spot_snapshot = fetch_account_snapshot(config=config)
+        spot_only = tuple(b for b in spot_snapshot.balances if not b.asset.startswith("LD"))
+        add_holdings("Spot", spot_only)
+    except BinanceAccountError as exc:
+        fetch_errors.append(f"Spot: {exc}")
+
+    try:
+        add_holdings("Funding", fetch_funding_wallet_balances(config=config))
+    except BinanceAccountError as exc:
+        fetch_errors.append(f"Funding: {exc}")
+
+    try:
+        add_holdings("Earn Flexible", fetch_simple_earn_flexible_positions(config=config))
+    except BinanceAccountError as exc:
+        fetch_errors.append(f"Earn Flexible: {exc}")
+
+    try:
+        add_holdings("Earn Locked", fetch_simple_earn_locked_positions(config=config))
+    except BinanceAccountError as exc:
+        fetch_errors.append(f"Earn Locked: {exc}")
+
+    error_note = ""
+    if fetch_errors:
+        error_items = "".join(f"<li>{escape(item)}</li>" for item in fetch_errors)
+        error_note = (
+            '<p class="negative">Some wallets could not be fetched (showing partial data below):</p>'
+            f"<ul>{error_items}</ul>"
+        )
+
+    if not holdings:
+        return f"""
+        <section id="wallet-overview-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">
+          <h2>Overview (All Wallets Combined)</h2>
+          {error_note or '<p class="muted">No balances found in Spot, Funding, or Earn.</p>'}
+        </section>
+        """
+
+    total_estimated_usdt = Decimal("0")
+    valuation_unavailable: list[str] = []
+    row_items: list[tuple[str, Decimal, Decimal | None, str]] = []
+    for asset, per_location in holdings.items():
+        total_amount = sum(per_location.values(), Decimal("0"))
+        if asset == "USDT":
+            value: Decimal | None = total_amount
+        else:
+            value = None
+            try:
+                prices = fetch_public_prices([f"{asset}USDT"])
+                value = total_amount * prices[0].price
+            except BinancePublicMarketError:
+                valuation_unavailable.append(asset)
+        if value is not None:
+            total_estimated_usdt += value
+        location_text = ", ".join(f"{location} {amount}" for location, amount in per_location.items())
+        row_items.append((asset, total_amount, value, location_text))
+
+    row_items.sort(key=lambda item: (item[0] != "USDT", -(item[2] or Decimal("0"))))
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(asset)}</td>"
+        f"<td>{escape(str(total_amount))}</td>"
+        f"<td>{escape(format_currency_usd(value)) if value is not None else 'N/A'}</td>"
+        f"<td class=\"muted\">{escape(location_text)}</td>"
+        "</tr>"
+        for asset, total_amount, value, location_text in row_items
+    )
+
+    valuation_note = ""
+    if valuation_unavailable:
+        valuation_note = (
+            f'<p class="muted">No direct USDT market price available for: '
+            f'{escape(", ".join(valuation_unavailable))} -- excluded from the total below.</p>'
+        )
+
+    return f"""
+    <section id="wallet-overview-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">
+      <h2>Overview (All Wallets Combined)</h2>
+      <p class="muted">
+        Aggregated across Spot, Funding, and Simple Earn (Flexible + Locked) -- matches what
+        Binance's own app shows as your overall Overview. Coins may also appear again below in
+        the Spot-only section with a smaller amount; that overlap is expected.
+      </p>
+      {error_note}
+      {_metric_card('Estimated Total Value (USDT)', format_currency_usd(total_estimated_usdt))}
+      <table class="summary-table">
+        <thead><tr><th>Asset</th><th>Total Amount</th><th>Est. Value (USDT)</th><th>Where It's Held</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+      {valuation_note}
     </section>
     """
 
