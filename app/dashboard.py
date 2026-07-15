@@ -1155,12 +1155,21 @@ def _render_live_bot_card(
         else ""
     )
 
-    bot_updated_at = bot_config.get("updated_at")
-    is_synced = bot_updated_at is None or (runtime_updated_at is not None and runtime_updated_at >= bot_updated_at)
-    if is_synced:
-        sync_html = '<span class="bot-sync-status bot-sync-ready">Ready to deploy</span>'
+    if not enabled:
+        # The sync badge answers "has the background loop picked up my
+        # settings yet" -- meaningless while the bot is off, since the loop
+        # never touches a disabled bot and the runtime timestamp would never
+        # catch up. Only show it once the bot is actually running.
+        sync_html = ""
     else:
-        sync_html = '<span class="bot-sync-status bot-sync-pending">Not ready — waiting for next cycle&hellip;</span>'
+        bot_updated_at = bot_config.get("updated_at")
+        is_synced = bot_updated_at is None or (
+            runtime_updated_at is not None and runtime_updated_at >= bot_updated_at
+        )
+        if is_synced:
+            sync_html = '<span class="bot-sync-status bot-sync-ready">Ready to deploy</span>'
+        else:
+            sync_html = '<span class="bot-sync-status bot-sync-pending">Not ready — waiting for next cycle&hellip;</span>'
 
     if interval == recommended_interval:
         timeframe_note = (
