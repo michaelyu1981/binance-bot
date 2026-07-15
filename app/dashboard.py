@@ -246,7 +246,8 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                     slug: query.get(definition["query_param"], [""])[0]
                     for slug, definition in LIVE_BOT_DEFINITIONS.items()
                 }
-                body = render_live_bots_view(selected_symbols=selected_symbols)
+                show_wallet = query.get("show_wallet", ["0"])[0] == "1"
+                body = render_live_bots_view(selected_symbols=selected_symbols, show_wallet=show_wallet)
             elif parsed_url.path == "/charts":
                 interval = _parse_chart_interval(query.get("interval", [DEFAULT_CHART_INTERVAL])[0])
                 body = render_chart_view(interval=interval)
@@ -771,7 +772,11 @@ def render_account_view() -> str:
 """
 
 
-def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> str:
+def render_live_bots_view(
+    *,
+    selected_symbols: dict[str, str] | None = None,
+    show_wallet: bool = False,
+) -> str:
     """Render the Live Bot Trader tab: on/off + tunable settings for the 3 approved paper-trading bots."""
 
     selected_symbols = selected_symbols or {}
@@ -789,6 +794,7 @@ def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> 
         )
         for slug, definition in LIVE_BOT_DEFINITIONS.items()
     )
+    wallet_panel = _render_live_bots_wallet_panel() if show_wallet else '<div id="wallet-panel"></div>'
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -811,6 +817,7 @@ def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> 
       it never sends a real order to Binance. Enabling real order execution is a separate, explicitly gated
       step; see <code>docs/binance-api-key-policy.md</code>.
     </section>
+    {wallet_panel}
     <div class="bot-grid">
       {cards}
     </div>
@@ -819,6 +826,66 @@ def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> 
 </body>
 </html>
 """
+
+
+def _render_live_bots_wallet_panel() -> str:
+    """Read-only, on-demand snapshot of the actual Binance Spot wallet.
+
+    Reuses the same account-endpoint call as the Account tab
+    (`fetch_account_snapshot`). Only fetched when the "Check My Wallet"
+    button is clicked, not on every page load, since it's a real network
+    call to Binance. GET /api/v3/account only -- no orders, no withdrawals.
+    """
+
+    config = load_binance_account_config_from_env()
+    if config is None:
+        return (
+            '<section id="wallet-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">'
+            "<h2>Your Binance Wallet</h2>"
+            '<p class="muted">BINANCE_API_KEY and BINANCE_API_SECRET are not configured.</p>'
+            "</section>"
+        )
+
+    try:
+        snapshot = fetch_account_snapshot(config=config)
+    except BinanceAccountError as exc:
+        return (
+            '<section id="wallet-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">'
+            "<h2>Your Binance Wallet</h2>"
+            f'<p class="negative">Could not fetch wallet snapshot: {escape(str(exc))}</p>'
+            "</section>"
+        )
+
+    tradable = [balance for balance in snapshot.balances if balance.free > 0]
+    tradable.sort(key=lambda balance: (balance.asset != "USDT", -balance.free))
+
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(balance.asset)}</td>"
+        f"<td>{escape(str(balance.free))}</td>"
+        f"<td class=\"muted\">"
+        f"{'Parked in Earn/Savings -- redeem to Spot before trading' if balance.asset.startswith('LD') else ''}"
+        "</td>"
+        "</tr>"
+        for balance in tradable
+    ) or '<tr><td colspan="3" class="muted">No free (tradable) balances found.</td></tr>'
+
+    usdt_free = next((balance.free for balance in snapshot.balances if balance.asset == "USDT"), Decimal("0"))
+
+    return f"""
+    <section id="wallet-panel" class="panel bot-wallet-panel" style="margin-bottom:18px;">
+      <h2>Your Binance Wallet (live, read-only)</h2>
+      <p class="muted">
+        Fetched just now from your actual Binance Spot account -- use this to decide how to split
+        capital across the coins above. Read-only account endpoint only. No orders. No withdrawals.
+      </p>
+      {_metric_card('Free USDT (Spot)', format_currency_usd(usdt_free))}
+      <table class="summary-table">
+        <thead><tr><th>Asset</th><th>Free (Tradable)</th><th>Note</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
 
 
 def _live_bots_warning_script() -> str:
@@ -923,13 +990,16 @@ def _render_live_bot_card(
           <h3>{escape(definition['name'])}</h3>
           <span class="bot-status-badge {status_class}">{status_label}</span>
         </div>
-        <div class="bot-toggle-wrap">
-          <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
-            <input type="hidden" name="slug" value="{escape(slug)}">
-            <input type="hidden" name="action" value="{toggle_action}">
-            <button type="submit" class="bot-toggle-btn {status_class}">{toggle_label}</button>
-          </form>
-          {sync_html}
+        <div class="bot-card-actions">
+          <a href="/live-bots?show_wallet=1#wallet-panel" class="wallet-check-btn">Check My Wallet</a>
+          <div class="bot-toggle-wrap">
+            <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
+              <input type="hidden" name="slug" value="{escape(slug)}">
+              <input type="hidden" name="action" value="{toggle_action}">
+              <button type="submit" class="bot-toggle-btn {status_class}">{toggle_label}</button>
+            </form>
+            {sync_html}
+          </div>
         </div>
       </div>
       <p class="muted">{escape(definition['summary'])}</p>
@@ -1496,6 +1566,20 @@ def _shared_page_css() -> str:
     }
     .bot-toggle-btn.bot-status-on { background: #fff5f5; border-color: var(--bad); color: var(--bad); }
     .bot-toggle-btn.bot-status-off { background: var(--accent); border-color: var(--accent); color: white; }
+    .bot-card-actions { display: flex; align-items: flex-start; gap: 12px; }
+    .wallet-check-btn {
+      display: inline-block;
+      padding: 8px 14px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .wallet-check-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .bot-wallet-panel table { margin-top: 12px; }
     .bot-toggle-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
     .bot-sync-status {
       font-size: 15pt;
@@ -1651,6 +1735,7 @@ def _shared_page_css() -> str:
       .filter-form button { width: 100%; }
       .param-form { grid-template-columns: 1fr; }
       .bot-card-head { flex-direction: column; align-items: stretch; }
+      .bot-card-actions { flex-direction: column; align-items: stretch; }
       .bot-toggle-wrap { align-items: flex-start; }
       .bot-sync-status { white-space: normal; }
       .distribute-row { grid-template-columns: 1fr; }
