@@ -57,6 +57,7 @@ from app.summary import (
     build_market_summary,
 )
 from app.live_bot_state import (
+    DEFAULT_CAPITAL_PER_SYMBOL,
     LIVE_BOT_DEFINITIONS,
     VALID_INTERVALS,
     read_live_bot_config,
@@ -331,10 +332,6 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                     if interval in VALID_INTERVALS:
                         bot_config["interval"] = interval
 
-                    capital_raw = form.get("capital_per_symbol", [bot_config["capital_per_symbol"]])[0]
-                    if _is_positive_decimal(capital_raw):
-                        bot_config["capital_per_symbol"] = capital_raw
-
                     symbols = [item for item in form.get("symbols", []) if item in PUBLIC_MARKET_WATCHLIST]
                     if symbols:
                         bot_config["symbols"] = symbols
@@ -344,6 +341,21 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                         if raw_value is not None and _is_positive_decimal(raw_value):
                             bot_config["params"][key] = raw_value
 
+                    capital_by_symbol = dict(bot_config.get("capital_by_symbol") or {})
+                    for symbol in PUBLIC_MARKET_WATCHLIST:
+                        raw_value = form.get(f"capital_{symbol}", [None])[0]
+                        if raw_value is not None and _is_positive_decimal(raw_value):
+                            capital_by_symbol[symbol] = raw_value
+
+                    form_action = form.get("form_action", ["save"])[0]
+                    if form_action == "distribute" and symbols:
+                        total_raw = form.get("total_capital_input", [""])[0]
+                        if _is_positive_decimal(total_raw):
+                            even_share = str(Decimal(total_raw) / Decimal(len(symbols)))
+                            for symbol in symbols:
+                                capital_by_symbol[symbol] = even_share
+
+                    bot_config["capital_by_symbol"] = capital_by_symbol
                     write_live_bot_config(config)
 
             self.send_response(303)
@@ -799,9 +811,34 @@ def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> 
       {cards}
     </div>
   </main>
+  <script>{_live_bots_warning_script()}</script>
 </body>
 </html>
 """
+
+
+def _live_bots_warning_script() -> str:
+    return """
+    document.querySelectorAll('form.bot-settings-form').forEach(function (form) {
+      form.addEventListener('submit', function (event) {
+        var openPositionsUnchecked = [];
+        form.querySelectorAll('input[type="checkbox"][data-has-position="true"]').forEach(function (checkbox) {
+          if (!checkbox.checked) {
+            openPositionsUnchecked.push(checkbox.getAttribute('data-symbol'));
+          }
+        });
+        if (openPositionsUnchecked.length > 0) {
+          var message = openPositionsUnchecked.join(', ') +
+            ' currently has an open paper position. Unchecking it stops tracking it on the ' +
+            'dashboard, and that position will be lost entirely if the paper-trading loop restarts ' +
+            'while it stays unchecked. Continue anyway?';
+          if (!window.confirm(message)) {
+            event.preventDefault();
+          }
+        }
+      });
+    });
+    """
 
 
 def _render_live_bot_card(
@@ -816,7 +853,7 @@ def _render_live_bot_card(
     interval = str(bot_config.get("interval", definition["recommended_interval"]))
     recommended_interval = definition["recommended_interval"]
     recommended_label = definition["recommended_interval_label"]
-    capital = str(bot_config.get("capital_per_symbol", "1000"))
+    capital_by_symbol = bot_config.get("capital_by_symbol") or {}
     symbols = bot_config.get("symbols") or list(PUBLIC_MARKET_WATCHLIST)
     params = bot_config.get("params", {})
 
@@ -841,10 +878,14 @@ def _render_live_bot_card(
         f'<option value="{escape(item)}" {"selected" if item == interval else ""}>{escape(item)}</option>'
         for item in VALID_INTERVALS
     )
-    symbol_checkboxes = "".join(
-        f'<label class="checkbox-label"><input type="checkbox" name="symbols" value="{escape(item)}" '
-        f'{"checked" if item in symbols else ""}> {escape(item)}</label>'
-        for item in PUBLIC_MARKET_WATCHLIST
+    coin_capital_rows = "".join(
+        _render_coin_capital_row(
+            symbol=symbol,
+            checked=symbol in symbols,
+            capital=str(capital_by_symbol.get(symbol, DEFAULT_CAPITAL_PER_SYMBOL)),
+            has_open_position=bool((bot_runtime.get(symbol) or {}).get("reference_lines")),
+        )
+        for symbol in PUBLIC_MARKET_WATCHLIST
     )
     param_inputs = "".join(
         f'<label>{escape(label)}<input name="param_{escape(key)}" value="{escape(str(params.get(key, "")))}"></label>'
@@ -878,23 +919,48 @@ def _render_live_bot_card(
       </div>
       <p class="muted">{escape(definition['summary'])}</p>
       {timeframe_note}
-      <form method="post" action="/live-bots/save" class="param-form">
+      <form method="post" action="/live-bots/save" class="param-form bot-settings-form">
         <input type="hidden" name="slug" value="{escape(slug)}">
         <label>Candle Interval
           <select name="interval">{interval_options}</select>
         </label>
-        <label>Capital per Symbol (USDT)
-          <input name="capital_per_symbol" value="{escape(capital)}">
-        </label>
         {param_inputs}
-        <div class="symbol-checkbox-group">{symbol_checkboxes}</div>
+        <div class="coin-capital-section">
+          <h4>Coins &amp; Capital (USDT each)</h4>
+          <div class="coin-capital-grid">{coin_capital_rows}</div>
+        </div>
+        <div class="distribute-row">
+          <label>Auto-Distribute Total (USDT)
+            <input name="total_capital_input" placeholder="e.g. 13500">
+          </label>
+          <button type="submit" name="form_action" value="distribute" class="btn-secondary">
+            Auto Distribute Evenly
+          </button>
+          <p class="muted" style="margin:4px 0 0;">
+            Splits the total evenly across whichever coins are checked above, overwriting their
+            individual amounts. Uncheck coins first to exclude them from the split.
+          </p>
+        </div>
         <div class="param-actions">
-          <button type="submit">Save Settings</button>
+          <button type="submit" name="form_action" value="save">Save Settings</button>
         </div>
       </form>
       {live_section}
     </section>
     """
+
+
+def _render_coin_capital_row(*, symbol: str, checked: bool, capital: str, has_open_position: bool) -> str:
+    position_flag = "true" if has_open_position else "false"
+    position_note = ' <span class="negative" title="Open paper position">&#9679;</span>' if has_open_position else ""
+    return (
+        '<div class="coin-capital-row">'
+        f'<label class="checkbox-label"><input type="checkbox" name="symbols" value="{escape(symbol)}" '
+        f'data-symbol="{escape(symbol)}" data-has-position="{position_flag}" {"checked" if checked else ""}> '
+        f"{escape(symbol)}{position_note}</label>"
+        f'<input name="capital_{escape(symbol)}" value="{escape(capital)}" class="coin-capital-input" placeholder="USDT">'
+        "</div>"
+    )
 
 
 def _render_live_bot_activity(
@@ -1499,6 +1565,52 @@ def _shared_page_css() -> str:
       background: var(--panel);
       z-index: 1;
     }
+    .coin-capital-section { grid-column: 1 / -1; margin-top: 6px; }
+    .coin-capital-section h4 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .coin-capital-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+    }
+    .coin-capital-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #fbfcfe;
+    }
+    .coin-capital-row .checkbox-label { flex: 1; }
+    .coin-capital-input { width: 90px; margin: 0; padding: 6px 8px; }
+    .distribute-row {
+      grid-column: 1 / -1;
+      border-top: 1px dashed var(--line);
+      padding-top: 12px;
+      margin-top: 4px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .distribute-row label { grid-column: 1; }
+    .distribute-row .btn-secondary {
+      grid-column: 2;
+      width: auto;
+      margin-top: 0;
+      background: var(--panel);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      white-space: nowrap;
+    }
+    .distribute-row p { grid-column: 1 / -1; }
     @media (max-width: 760px) {
       main, header, .topbar { padding: 16px; }
       .signal-head, .signal-detail-grid { grid-template-columns: 1fr; }
@@ -1507,6 +1619,8 @@ def _shared_page_css() -> str:
       .filter-form button { width: 100%; }
       .param-form { grid-template-columns: 1fr; }
       .bot-card-head { flex-direction: column; align-items: stretch; }
+      .distribute-row { grid-template-columns: 1fr; }
+      .distribute-row .btn-secondary { grid-column: 1; width: 100%; }
     }
     """
 

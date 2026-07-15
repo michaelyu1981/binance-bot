@@ -211,7 +211,7 @@ def run_live_paper_trading_once() -> dict[str, Any]:
             continue
 
         interval = str(bot_config.get("interval") or LIVE_BOT_DEFINITIONS[slug]["recommended_interval"])
-        capital = Decimal(str(bot_config.get("capital_per_symbol", "1000")))
+        capital_by_symbol = bot_config.get("capital_by_symbol") or {}
         params = bot_config.get("params") or {}
         symbols = bot_config.get("symbols") or []
 
@@ -220,6 +220,7 @@ def run_live_paper_trading_once() -> dict[str, Any]:
 
         bot_runtime: dict[str, Any] = {}
         for symbol in symbols:
+            capital = Decimal(str(capital_by_symbol.get(symbol, "1000")))
             session = _get_session(slug, symbol, capital=capital, params=params, interval=interval)
             try:
                 candles = fetch_public_candles(symbol, interval, limit=2)

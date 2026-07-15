@@ -98,7 +98,7 @@ def default_config() -> dict[str, Any]:
         slug: {
             "enabled": False,
             "interval": definition["recommended_interval"],
-            "capital_per_symbol": str(DEFAULT_CAPITAL_PER_SYMBOL),
+            "capital_by_symbol": {symbol: str(DEFAULT_CAPITAL_PER_SYMBOL) for symbol in PUBLIC_MARKET_WATCHLIST},
             "symbols": list(PUBLIC_MARKET_WATCHLIST),
             "params": dict(definition["default_params"]),
         }
@@ -107,7 +107,7 @@ def default_config() -> dict[str, Any]:
 
 
 def read_live_bot_config() -> dict[str, Any]:
-    """Merge stored config over defaults, so new default params never go missing."""
+    """Merge stored config over defaults, so new default params/coins never go missing."""
 
     config = default_config()
     stored = _read_json(LIVE_BOT_CONFIG_PATH)
@@ -116,11 +116,17 @@ def read_live_bot_config() -> dict[str, Any]:
         if not isinstance(stored_bot, dict):
             continue
         merged = dict(defaults)
-        merged.update({key: value for key, value in stored_bot.items() if key != "params"})
+        merged.update(
+            {key: value for key, value in stored_bot.items() if key not in ("params", "capital_by_symbol")}
+        )
         merged_params = dict(defaults["params"])
         if isinstance(stored_bot.get("params"), dict):
             merged_params.update(stored_bot["params"])
         merged["params"] = merged_params
+        merged_capital = dict(defaults["capital_by_symbol"])
+        if isinstance(stored_bot.get("capital_by_symbol"), dict):
+            merged_capital.update(stored_bot["capital_by_symbol"])
+        merged["capital_by_symbol"] = merged_capital
         config[slug] = merged
     return config
 
