@@ -1069,7 +1069,7 @@ def _render_live_bot_card(
 
     status_class = "bot-status-on" if enabled else "bot-status-off"
     status_label = "ON" if enabled else "OFF"
-    toggle_label = "Turn Off" if enabled else "Turn On"
+    toggle_label = "Stop Trading" if enabled else "Start Trading"
     toggle_action = "off" if enabled else "on"
 
     bot_updated_at = bot_config.get("updated_at")
