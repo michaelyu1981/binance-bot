@@ -372,6 +372,16 @@ class ClaudeModifiedMartingaleATR:
         self.total_base_held = Decimal("0")
         self.average_price = Decimal("0")
 
+    def reset_position(self) -> None:
+        """Public wrapper: clears ladder/position state (layer, invested, avg
+        price) while leaving RSI/ATR indicator state untouched. Used by
+        app.live_trading_engine after seeding a live-mode session, so a real
+        bot never inherits a virtual position reconstructed from history --
+        it must only ever hold a position that was actually bought.
+        """
+
+        self._reset_position()
+
     def evaluate(
         self,
         *,

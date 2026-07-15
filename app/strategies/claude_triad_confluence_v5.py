@@ -264,6 +264,23 @@ class ClaudeTriadConfluenceV5:
         self.trail_armed = False
         self.candles_since_exit = 0
 
+    def reset_position(self) -> None:
+        """Clears position/trade state while leaving indicator and
+        pattern-detector state (RSI, ATR, regime, swing detectors, momentum
+        window) untouched. Used by app.live_trading_engine after seeding a
+        live-mode session, so a real bot never inherits a virtual position
+        reconstructed from history -- it must only ever hold a position that
+        was actually bought. Uses the "never exited" cooldown sentinel
+        (unlike `_exit_position`'s 0), since no real exit has happened.
+        """
+
+        self.is_in_position = False
+        self.entry_price = Decimal("0")
+        self.stop_price = Decimal("0")
+        self.peak_close = Decimal("0")
+        self.trail_armed = False
+        self.candles_since_exit = 10 ** 9
+
     def evaluate(
         self,
         *,

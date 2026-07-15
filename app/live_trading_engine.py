@@ -21,7 +21,7 @@ from typing import Any, Protocol
 from app.backtesting import DEFAULT_BACKTEST_DB_PATH
 from app.binance_reader import BinancePublicMarketError, Candle, fetch_public_candles
 from app.candle_store import upsert_candles
-from app.live_bot_state import LIVE_BOT_DEFINITIONS, TRADING_MODE_SIMULATED, read_live_bot_config
+from app.live_bot_state import LIVE_BOT_DEFINITIONS, TRADING_MODE_LIVE, TRADING_MODE_SIMULATED, read_live_bot_config
 from app.strategies.claude_modified_martingale_atr import ClaudeModifiedMartingaleATR
 from app.strategies.claude_modified_martingale_rsi import ClaudeModifiedMartingaleRSI
 from app.strategies.claude_triad_confluence_v5 import ClaudeTriadConfluenceV5
@@ -184,6 +184,21 @@ class TradingEngine:
                 "trade_log": [],
             }
             self._seed_session(session, symbol, interval)
+            if self._mode_filter == TRADING_MODE_LIVE:
+                # Seeding intentionally reconstructs what position the
+                # strategy would hold based on recent price history, so its
+                # indicators (RSI/ATR/etc) are warmed up correctly. But a
+                # live-mode bot must never start believing it holds a
+                # position it never actually bought -- that could later
+                # trigger a real SELL order for coins the account doesn't
+                # hold. Discard the reconstructed position/balance/history,
+                # keeping only the warmed-up indicator state.
+                reset_position = getattr(session["machine"], "reset_position", None)
+                if reset_position is not None:
+                    reset_position()
+                session["usdt_balance"] = capital
+                session["base_balance"] = Decimal("0")
+                session["trade_log"] = []
             self._sessions[key] = session
         return self._sessions[key]
 
