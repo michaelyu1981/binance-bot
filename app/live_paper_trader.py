@@ -14,10 +14,20 @@ execution requires Michael's exact phrase "enable live spot trading." per
 `docs/binance-api-key-policy.md` and is not implemented anywhere in this
 file.
 
-Known limitation: each strategy instance's ladder state (level, average
-price, RSI/ATR running averages) lives only in this process's memory. A
-restart of this loop resets every bot to idle. Persisting that internal
-state across restarts is future work, not implemented here.
+Turn Off / Turn On is a hard reset by design: turning a bot off immediately
+forgets all of its in-memory sessions (every symbol), and turning it back on
+always rebuilds fresh sessions from whatever capital/params/symbols are
+configured *at that moment* -- never a session resumed from before it was
+last enabled. This is checked once per cycle (see `_PREVIOUSLY_ENABLED`), so
+the reset happens within one `POLL_SECONDS` cycle of clicking the button, not
+instantly.
+
+Known limitation: while a bot stays continuously ON, its ladder state
+(level, average price, RSI/ATR running averages) lives only in this
+process's memory. A restart of this whole loop process (e.g. a deploy) still
+resets every currently-running bot to idle, same as an off/on toggle would.
+Persisting that state across a process restart is future work, not
+implemented here.
 """
 
 from __future__ import annotations
@@ -80,6 +90,25 @@ _STRATEGY_BUILDERS = {
 
 # In-memory only for this process's lifetime -- see the "Known limitation" note above.
 _SESSIONS: dict[tuple[str, str], dict[str, Any]] = {}
+
+# Tracks each bot's enabled state as of the previous cycle, so a Turn Off ->
+# Turn On transition can be detected and treated as a genuine fresh start
+# (new sessions rebuilt from whatever capital/params are configured *now*),
+# rather than silently resuming stale sessions built under old settings.
+_PREVIOUSLY_ENABLED: dict[str, bool] = {}
+
+
+def _clear_sessions_for_bot(slug: str) -> None:
+    """Forget every in-memory trading session for this bot (all symbols).
+
+    Called both when a bot is turned off (stop and forget immediately) and
+    when it's turned back on (guarantee a clean rebuild under the current
+    config, not a resumed session from before it was last enabled).
+    """
+
+    stale_keys = [key for key in _SESSIONS if key[0] == slug]
+    for key in stale_keys:
+        del _SESSIONS[key]
 
 
 SEED_CANDLE_LIMIT = 100
@@ -207,8 +236,23 @@ def run_live_paper_trading_once() -> dict[str, Any]:
 
     for slug in LIVE_BOT_DEFINITIONS:
         bot_config = config.get(slug)
-        if not isinstance(bot_config, dict) or not bot_config.get("enabled"):
+        enabled = isinstance(bot_config, dict) and bool(bot_config.get("enabled"))
+        was_enabled = _PREVIOUSLY_ENABLED.get(slug, False)
+
+        if not enabled:
+            if was_enabled:
+                # Just turned off: stop and forget immediately, don't wait for a
+                # future re-enable to clean up after it.
+                _clear_sessions_for_bot(slug)
+            _PREVIOUSLY_ENABLED[slug] = False
             continue
+
+        if not was_enabled:
+            # Just turned on (or this is the loop's first cycle seeing it on):
+            # guarantee a clean rebuild under whatever is configured right now,
+            # never a session resumed from before it was last enabled.
+            _clear_sessions_for_bot(slug)
+        _PREVIOUSLY_ENABLED[slug] = True
 
         interval = str(bot_config.get("interval") or LIVE_BOT_DEFINITIONS[slug]["recommended_interval"])
         capital_by_symbol = bot_config.get("capital_by_symbol") or {}

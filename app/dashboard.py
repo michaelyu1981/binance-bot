@@ -64,7 +64,7 @@ from app.live_bot_state import (
     read_live_bot_runtime,
     write_live_bot_config,
 )
-from app.logger import format_currency_usd
+from app.logger import current_timestamp, format_currency_usd
 from app.indicators import (
     IndicatorSnapshot,
     build_indicator_snapshot,
@@ -308,6 +308,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                 config = read_live_bot_config()
                 if slug in config:
                     config[slug]["enabled"] = action == "on"
+                    config[slug]["updated_at"] = current_timestamp()
                     write_live_bot_config(config)
 
             self.send_response(303)
@@ -356,6 +357,7 @@ def _build_dashboard_handler() -> type[BaseHTTPRequestHandler]:
                                 capital_by_symbol[symbol] = even_share
 
                     bot_config["capital_by_symbol"] = capital_by_symbol
+                    bot_config["updated_at"] = current_timestamp()
                     write_live_bot_config(config)
 
             self.send_response(303)
@@ -775,6 +777,7 @@ def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> 
     selected_symbols = selected_symbols or {}
     config = read_live_bot_config()
     runtime = read_live_bot_runtime()
+    runtime_updated_at = runtime.get("updated_at")
     cards = "".join(
         _render_live_bot_card(
             slug=slug,
@@ -782,6 +785,7 @@ def render_live_bots_view(*, selected_symbols: dict[str, str] | None = None) -> 
             bot_config=config.get(slug, {}),
             bot_runtime=runtime.get(slug, {}),
             selected_symbol=selected_symbols.get(slug, ""),
+            runtime_updated_at=runtime_updated_at,
         )
         for slug, definition in LIVE_BOT_DEFINITIONS.items()
     )
@@ -848,6 +852,7 @@ def _render_live_bot_card(
     bot_config: dict[str, Any],
     bot_runtime: dict[str, Any],
     selected_symbol: str,
+    runtime_updated_at: str | None,
 ) -> str:
     enabled = bool(bot_config.get("enabled", False))
     interval = str(bot_config.get("interval", definition["recommended_interval"]))
@@ -861,6 +866,13 @@ def _render_live_bot_card(
     status_label = "ON" if enabled else "OFF"
     toggle_label = "Turn Off" if enabled else "Turn On"
     toggle_action = "off" if enabled else "on"
+
+    bot_updated_at = bot_config.get("updated_at")
+    is_synced = bot_updated_at is None or (runtime_updated_at is not None and runtime_updated_at >= bot_updated_at)
+    if is_synced:
+        sync_html = '<span class="bot-sync-status bot-sync-ready">Ready to deploy</span>'
+    else:
+        sync_html = '<span class="bot-sync-status bot-sync-pending">Not ready — waiting for next cycle&hellip;</span>'
 
     if interval == recommended_interval:
         timeframe_note = (
@@ -911,11 +923,14 @@ def _render_live_bot_card(
           <h3>{escape(definition['name'])}</h3>
           <span class="bot-status-badge {status_class}">{status_label}</span>
         </div>
-        <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
-          <input type="hidden" name="slug" value="{escape(slug)}">
-          <input type="hidden" name="action" value="{toggle_action}">
-          <button type="submit" class="bot-toggle-btn {status_class}">{toggle_label}</button>
-        </form>
+        <div class="bot-toggle-wrap">
+          <form method="post" action="/live-bots/toggle" class="bot-toggle-form">
+            <input type="hidden" name="slug" value="{escape(slug)}">
+            <input type="hidden" name="action" value="{toggle_action}">
+            <button type="submit" class="bot-toggle-btn {status_class}">{toggle_label}</button>
+          </form>
+          {sync_html}
+        </div>
       </div>
       <p class="muted">{escape(definition['summary'])}</p>
       {timeframe_note}
@@ -1481,6 +1496,23 @@ def _shared_page_css() -> str:
     }
     .bot-toggle-btn.bot-status-on { background: #fff5f5; border-color: var(--bad); color: var(--bad); }
     .bot-toggle-btn.bot-status-off { background: var(--accent); border-color: var(--accent); color: white; }
+    .bot-toggle-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+    .bot-sync-status {
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+      text-shadow:
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000,
+         0px  1px 0 #000,
+         0px -1px 0 #000,
+         1px  0px 0 #000,
+        -1px  0px 0 #000;
+    }
+    .bot-sync-ready { color: #37b24d; }
+    .bot-sync-pending { color: #f03e3e; }
     .bot-note {
       margin-top: 12px;
       padding: 10px 12px;
