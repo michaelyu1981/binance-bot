@@ -46,6 +46,19 @@ def format_currency_usd(value: Decimal) -> str:
     return f"${value:,.2f}"
 
 
+def format_coin_amount(value: Decimal) -> str:
+    """Format a raw coin quantity with thousands separators, preserving full precision.
+
+    E.g. Decimal("2071.36810009") -> "2,071.36810009", Decimal("0.00007185")
+    -> "0.00007185". Unlike format_currency_usd, this never truncates
+    decimal places -- crypto quantities range from 0.00007185 to
+    thousands, and a fixed 2-decimal format would erase small holdings.
+    Only adds comma grouping to the integer part for readability.
+    """
+
+    return f"{value:,}"
+
+
 def format_market_price_lines(
     prices: Iterable[MarketPrice],
     *,

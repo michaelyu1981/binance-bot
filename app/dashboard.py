@@ -67,7 +67,7 @@ from app.live_bot_state import (
     read_live_bot_runtime,
     write_live_bot_config,
 )
-from app.logger import current_timestamp, format_currency_usd
+from app.logger import current_timestamp, format_coin_amount, format_currency_usd
 from app.indicators import (
     IndicatorSnapshot,
     build_indicator_snapshot,
@@ -872,7 +872,7 @@ def _render_live_bots_wallet_panel() -> str:
     rows = "".join(
         "<tr>"
         f"<td>{escape(balance.asset)}</td>"
-        f"<td>{escape(str(balance.free))}</td>"
+        f"<td>{escape(format_coin_amount(balance.free))}</td>"
         f"<td class=\"muted\">"
         f"{'Parked in Earn/Savings -- redeem to Spot before trading' if balance.asset.startswith('LD') else ''}"
         "</td>"
@@ -984,14 +984,16 @@ def _render_live_bots_wallet_overview_panel() -> str:
                 valuation_unavailable.append(asset)
         if value is not None:
             total_estimated_usdt += value
-        location_text = ", ".join(f"{location} {amount}" for location, amount in per_location.items())
+        location_text = ", ".join(
+            f"{location} {format_coin_amount(amount)}" for location, amount in per_location.items()
+        )
         row_items.append((asset, total_amount, value, location_text))
 
     row_items.sort(key=lambda item: (item[0] != "USDT", -(item[2] or Decimal("0"))))
     rows = "".join(
         "<tr>"
         f"<td>{escape(asset)}</td>"
-        f"<td>{escape(str(total_amount))}</td>"
+        f"<td>{escape(format_coin_amount(total_amount))}</td>"
         f"<td>{escape(format_currency_usd(value)) if value is not None else 'N/A'}</td>"
         f"<td class=\"muted\">{escape(location_text)}</td>"
         "</tr>"
@@ -2456,9 +2458,9 @@ def _render_account_balances(snapshot: AccountSnapshot) -> str:
         (
             "<tr>"
             f"<td>{escape(balance.asset)}</td>"
-            f"<td>{escape(str(balance.free))}</td>"
-            f"<td>{escape(str(balance.locked))}</td>"
-            f"<td>{escape(str(balance.total))}</td>"
+            f"<td>{escape(format_coin_amount(balance.free))}</td>"
+            f"<td>{escape(format_coin_amount(balance.locked))}</td>"
+            f"<td>{escape(format_coin_amount(balance.total))}</td>"
             "</tr>"
         )
         for balance in snapshot.balances
