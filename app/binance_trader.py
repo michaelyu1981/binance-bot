@@ -79,7 +79,7 @@ def place_market_buy_by_quote(
         config=config,
         symbol=symbol,
         side="BUY",
-        params={"quoteOrderQty": str(quote_amount)},
+        params={"quoteOrderQty": _format_order_decimal(quote_amount)},
         timeout_seconds=timeout_seconds,
     )
 
@@ -102,9 +102,29 @@ def place_market_sell_by_quantity(
         config=config,
         symbol=symbol,
         side="SELL",
-        params={"quantity": str(quantity)},
+        params={"quantity": _format_order_decimal(quantity)},
         timeout_seconds=timeout_seconds,
     )
+
+
+def _format_order_decimal(value: Decimal) -> str:
+    """Format a Decimal as a plain fixed-point string Binance's order API will accept.
+
+    Strategy position sizing involves division (e.g. `lot_cost / remaining_
+    capital`), which under Python's default 28-significant-digit Decimal
+    context can produce far more than 20 digits after the decimal point.
+    Binance's numeric order params are validated against
+    `^([0-9]{1,20})(\\.[0-9]{1,20})?$` and reject anything longer -- this
+    always emits fixed-point notation (never scientific notation, which
+    `str(Decimal(...))` can also produce), rounded down to 8 fractional
+    digits, ample precision for a USDT quote amount or a base quantity.
+    """
+
+    quantized = value.quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+    text = format(quantized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _place_order(

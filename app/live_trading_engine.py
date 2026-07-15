@@ -76,6 +76,41 @@ class TradeExecutor(Protocol):
     def sell(self, *, session: dict[str, Any], symbol: str, decision: Any) -> dict[str, Any] | None: ...
 
 
+class _SeedExecutor:
+    """Always simulates a fill. Used only for replaying history during session
+    seeding -- see `TradingEngine._seed_session` -- regardless of whether the
+    engine's real cycle executor is `PaperExecutor` or `RealExecutor`.
+
+    Seeding exists purely to warm up a fresh session's RSI/ATR running
+    averages and ladder state from recent history, not to catch up on trades
+    that already happened. It would never be correct to place a real order
+    for a candle that closed in the past -- there is no way to "buy" a
+    historical price. `RealExecutor` must never be reachable from here.
+    """
+
+    FEE_RATE = Decimal("0.001")
+
+    def buy(self, *, session: dict[str, Any], symbol: str, decision: Any) -> dict[str, Any] | None:
+        spend = session["usdt_balance"] if decision.fraction is None else session["usdt_balance"] * decision.fraction
+        if spend <= 0:
+            return None
+        fee = spend * self.FEE_RATE
+        base_bought = (spend - fee) / decision.price
+        session["usdt_balance"] -= spend
+        session["base_balance"] += base_bought
+        record_fill = getattr(session["machine"], "record_fill", None)
+        if record_fill is not None:
+            record_fill(usdt_spent=spend, base_bought=base_bought)
+        return {"action": "SEED_BUY", "price": str(decision.price), "reason": decision.reason}
+
+    def sell(self, *, session: dict[str, Any], symbol: str, decision: Any) -> dict[str, Any] | None:
+        gross_usdt = session["base_balance"] * decision.price
+        fee = gross_usdt * self.FEE_RATE
+        session["usdt_balance"] += gross_usdt - fee
+        session["base_balance"] = Decimal("0")
+        return {"action": "SEED_SELL", "price": str(decision.price), "reason": decision.reason}
+
+
 class TradingEngine:
     """Runs one bot family (paper or live) -- owns its own in-memory session state.
 
@@ -106,9 +141,12 @@ class TradingEngine:
     def _seed_session(self, session: dict[str, Any], symbol: str, interval: str) -> None:
         """Warm up RSI/ATR running averages with recent history so a freshly
         toggled-on bot doesn't sit idle for ~14 candle-intervals before its
-        indicators are ready. Seeding candles run through the exact same
+        indicators are ready. Seeding candles run through the same
         `_process_candle` fill logic as live candles, keeping the machine's
-        ladder state and the session's own balance bookkeeping consistent.
+        ladder state and the session's own balance bookkeeping consistent --
+        but always through `_SeedExecutor`, never `self._executor`, so a
+        live-mode engine can never place a real order while replaying
+        history. See `_SeedExecutor` docstring.
         """
 
         try:
@@ -121,8 +159,9 @@ class TradingEngine:
         # Exclude the last candle: it may still be forming and will be
         # re-fetched and processed normally as "the latest closed candle" on
         # the first real cycle.
+        seed_executor = _SeedExecutor()
         for candle in history[:-1]:
-            self._process_candle(session, symbol, candle)
+            self._process_candle(session, symbol, candle, executor=seed_executor)
         session["last_open_time_ms"] = history[-2].open_time_ms
 
     def _get_session(
@@ -148,9 +187,22 @@ class TradingEngine:
             self._sessions[key] = session
         return self._sessions[key]
 
-    def _process_candle(self, session: dict[str, Any], symbol: str, candle: Candle) -> None:
-        """Feed one closed candle to the strategy and delegate any resulting fill to the executor."""
+    def _process_candle(
+        self,
+        session: dict[str, Any],
+        symbol: str,
+        candle: Candle,
+        *,
+        executor: TradeExecutor | None = None,
+    ) -> None:
+        """Feed one closed candle to the strategy and delegate any resulting fill to the executor.
 
+        `executor` defaults to `self._executor` (the engine's real cycle
+        executor). `_seed_session` explicitly passes a `_SeedExecutor`
+        instead, so history replay never reaches `self._executor`.
+        """
+
+        active_executor = executor if executor is not None else self._executor
         machine = session["machine"]
         candle_dict = {
             "open": candle.open_price,
@@ -164,9 +216,9 @@ class TradingEngine:
         record: dict[str, Any] | None = None
 
         if decision.action == "SIMULATED_BUY" and decision.price is not None and session["usdt_balance"] > 0:
-            record = self._executor.buy(session=session, symbol=symbol, decision=decision)
+            record = active_executor.buy(session=session, symbol=symbol, decision=decision)
         elif decision.action == "SIMULATED_SELL" and decision.price is not None and session["base_balance"] > 0:
-            record = self._executor.sell(session=session, symbol=symbol, decision=decision)
+            record = active_executor.sell(session=session, symbol=symbol, decision=decision)
 
         if record is not None:
             record["timestamp_ms"] = candle.open_time_ms
