@@ -74,7 +74,12 @@ class RealExecutor:
             print(f"LIVE BUY FAILED {symbol}: {exc}")
             _notify_telegram(
                 _format_failure_message(
-                    strategy_name=strategy_name, symbol=symbol, side="BUY", attempted=attempted, error=str(exc)
+                    strategy_name=strategy_name,
+                    symbol=symbol,
+                    side="BUY",
+                    price=decision.price,
+                    attempted=attempted,
+                    error=str(exc),
                 )
             )
             return {"action": "LIVE_BUY_FAILED", "reason": f"{decision.reason} -- ORDER FAILED: {exc}"}
@@ -87,6 +92,7 @@ class RealExecutor:
                     strategy_name=strategy_name,
                     symbol=symbol,
                     side="BUY",
+                    price=decision.price,
                     attempted=attempted,
                     error="Order filled zero quantity.",
                 )
@@ -130,7 +136,12 @@ class RealExecutor:
             print(f"LIVE SELL FAILED {symbol}: {exc}")
             _notify_telegram(
                 _format_failure_message(
-                    strategy_name=strategy_name, symbol=symbol, side="SELL", attempted=attempted, error=str(exc)
+                    strategy_name=strategy_name,
+                    symbol=symbol,
+                    side="SELL",
+                    price=decision.price,
+                    attempted=attempted,
+                    error=str(exc),
                 )
             )
             return {"action": "LIVE_SELL_FAILED", "reason": f"{decision.reason} -- ORDER FAILED: {exc}"}
@@ -143,6 +154,7 @@ class RealExecutor:
                     strategy_name=strategy_name,
                     symbol=symbol,
                     side="SELL",
+                    price=decision.price,
                     attempted=attempted,
                     error="Order filled zero quantity.",
                 )
@@ -216,13 +228,16 @@ def _format_fill_message(
     )
 
 
-def _format_failure_message(*, strategy_name: str, symbol: str, side: str, attempted: str, error: str) -> str:
+def _format_failure_message(
+    *, strategy_name: str, symbol: str, side: str, price: Decimal, attempted: str, error: str
+) -> str:
     return "\n".join(
         [
             f"CoinPilot LIVE Trade -- {side} FAILED",
             "",
             f"Strategy: {strategy_name}",
             f"Symbol: {symbol}",
+            f"Price: {format_price_usd(price)}",
             f"Attempted: {attempted}",
             f"Error: {error}",
             "",
