@@ -67,24 +67,31 @@ class RealExecutor:
         if spend <= 0:
             return None
         strategy_name = _strategy_name(session.get("slug"))
+        attempted = f"{format_currency_usd(spend)} -- {decision.reason}"
         try:
             order = place_market_buy_by_quote(config=self._config, symbol=symbol, quote_amount=spend)
         except BinanceTraderError as exc:
             print(f"LIVE BUY FAILED {symbol}: {exc}")
             _notify_telegram(
-                _format_failure_message(strategy_name=strategy_name, symbol=symbol, side="BUY", error=str(exc))
+                _format_failure_message(
+                    strategy_name=strategy_name, symbol=symbol, side="BUY", attempted=attempted, error=str(exc)
+                )
             )
-            return {"action": "LIVE_BUY_FAILED", "reason": str(exc)}
+            return {"action": "LIVE_BUY_FAILED", "reason": f"{decision.reason} -- ORDER FAILED: {exc}"}
 
         executed_qty = _decimal_field(order, "executedQty")
         quote_spent = _decimal_field(order, "cummulativeQuoteQty")
         if executed_qty <= 0:
             _notify_telegram(
                 _format_failure_message(
-                    strategy_name=strategy_name, symbol=symbol, side="BUY", error="Order filled zero quantity."
+                    strategy_name=strategy_name,
+                    symbol=symbol,
+                    side="BUY",
+                    attempted=attempted,
+                    error="Order filled zero quantity.",
                 )
             )
-            return {"action": "LIVE_BUY_FAILED", "reason": "Order filled zero quantity."}
+            return {"action": "LIVE_BUY_FAILED", "reason": f"{decision.reason} -- ORDER FAILED: filled zero quantity."}
 
         session["usdt_balance"] -= quote_spent
         session["base_balance"] += executed_qty
@@ -116,24 +123,34 @@ class RealExecutor:
         if quantity <= 0:
             return None
         strategy_name = _strategy_name(session.get("slug"))
+        attempted = f"{format_coin_amount(quantity)} {symbol} -- {decision.reason}"
         try:
             order = place_market_sell_by_quantity(config=self._config, symbol=symbol, quantity=quantity)
         except BinanceTraderError as exc:
             print(f"LIVE SELL FAILED {symbol}: {exc}")
             _notify_telegram(
-                _format_failure_message(strategy_name=strategy_name, symbol=symbol, side="SELL", error=str(exc))
+                _format_failure_message(
+                    strategy_name=strategy_name, symbol=symbol, side="SELL", attempted=attempted, error=str(exc)
+                )
             )
-            return {"action": "LIVE_SELL_FAILED", "reason": str(exc)}
+            return {"action": "LIVE_SELL_FAILED", "reason": f"{decision.reason} -- ORDER FAILED: {exc}"}
 
         executed_qty = _decimal_field(order, "executedQty")
         quote_received = _decimal_field(order, "cummulativeQuoteQty")
         if executed_qty <= 0:
             _notify_telegram(
                 _format_failure_message(
-                    strategy_name=strategy_name, symbol=symbol, side="SELL", error="Order filled zero quantity."
+                    strategy_name=strategy_name,
+                    symbol=symbol,
+                    side="SELL",
+                    attempted=attempted,
+                    error="Order filled zero quantity.",
                 )
             )
-            return {"action": "LIVE_SELL_FAILED", "reason": "Order filled zero quantity."}
+            return {
+                "action": "LIVE_SELL_FAILED",
+                "reason": f"{decision.reason} -- ORDER FAILED: filled zero quantity.",
+            }
 
         session["usdt_balance"] += quote_received
         session["base_balance"] -= executed_qty
@@ -199,13 +216,14 @@ def _format_fill_message(
     )
 
 
-def _format_failure_message(*, strategy_name: str, symbol: str, side: str, error: str) -> str:
+def _format_failure_message(*, strategy_name: str, symbol: str, side: str, attempted: str, error: str) -> str:
     return "\n".join(
         [
             f"CoinPilot LIVE Trade -- {side} FAILED",
             "",
             f"Strategy: {strategy_name}",
             f"Symbol: {symbol}",
+            f"Attempted: {attempted}",
             f"Error: {error}",
             "",
             "Order attempt only. No funds moved.",
